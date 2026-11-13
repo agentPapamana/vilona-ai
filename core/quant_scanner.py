@@ -354,10 +354,9 @@ class QuantScanner:
         # Everything we have ever opened this process; a ticket leaving the book
         # is how a close is detected.
         self._known_tickets: set = set()
-        # Bridge heartbeat: epoch of the newest tick accepted this process, and
-        # whether an outage alert is already outstanding (suppresses repeats).
-        self._last_heartbeat_tick_s: Optional[float] = None
-        self._heartbeat_down = False
+        # Bridge heartbeat is tracked independently for each routed venue.
+        self._last_heartbeat_tick_s: Dict[str, Optional[float]] = {}
+        self._heartbeat_down: Dict[str, bool] = {}
         # ticket -> epoch seconds of the last LLM position review, for rate limiting
         self._last_position_review: Dict[int, float] = {}
 
@@ -609,31 +608,55 @@ class QuantScanner:
                 logger.error(f"Error in scan cycle: {e}", exc_info=True)
             self._stop_event.wait(timeout=self.poll_interval)
 
+    @staticmethod
+    def _heartbeat_key(route) -> str:
+        account = None
+        getter = getattr(route, "get_account_info", None)
+        if callable(getter):
+            try:
+                account = getter()
+            except Exception:
+                account = None
+        login = getattr(account, "login", 0) if account else 0
+        currency = getattr(account, "currency", "") if account else ""
+        return f"{type(route).__name__}:{login}:{currency or getattr(route, 'account_currency', 'unknown')}"
+
     def check_bridge_heartbeat(self):
-        """Alert once when the bridge feed freezes; re-arm after recovery."""
-        decision = evaluate_bridge_heartbeat(
-            last_tick_epoch_s=self._last_heartbeat_tick_s,
-            now_epoch_s=time.time(),
-            threshold_s=float(getattr(self.cfg.trading, "bridge_heartbeat_timeout_s", 60.0)),
-            previously_down=self._heartbeat_down,
-        )
-        if decision.healthy:
-            if self._heartbeat_down:
-                self._feed("BRIDGE RECOVERED: tick feed resumed")
-                logger.warning("Bridge heartbeat recovered")
-            self._heartbeat_down = False
-            return
-        if decision.should_alert:
-            self._heartbeat_down = True
-            message = f"BRIDGE ALERT: {decision.reason}"
-            self._feed(message)
-            self._agent_feed("risk_manager", "BRIDGE", message)
-            logger.error(message)
-            if self.tg_controller and hasattr(self.tg_controller, "send_alert"):
-                try:
-                    self.tg_controller.send_alert(f"<b>Vilona AI bridge alert</b>\n{decision.reason}")
-                except Exception as e:
-                    logger.error(f"Failed to send bridge alert: {e}")
+        """Alert independently when any routed venue feed freezes."""
+        routes = {}
+        symbols = getattr(self.cfg.trading, "symbols", None) or []
+        for symbol in symbols:
+            try:
+                route = self.bridge.bridge_for(symbol) if hasattr(self.bridge, "bridge_for") else self.bridge
+                routes[self._heartbeat_key(route)] = route
+            except (KeyError, TypeError):
+                continue
+        if not routes:
+            routes[self._heartbeat_key(self.bridge)] = self.bridge
+        for key in routes:
+            decision = evaluate_bridge_heartbeat(
+                last_tick_epoch_s=self._last_heartbeat_tick_s.get(key),
+                now_epoch_s=time.time(),
+                threshold_s=float(getattr(self.cfg.trading, "bridge_heartbeat_timeout_s", 60.0)),
+                previously_down=self._heartbeat_down.get(key, False),
+            )
+            if decision.healthy:
+                if self._heartbeat_down.get(key, False):
+                    self._feed(f"BRIDGE RECOVERED [{key}]: tick feed resumed")
+                    logger.warning("Bridge heartbeat recovered [%s]", key)
+                self._heartbeat_down[key] = False
+                continue
+            if decision.should_alert:
+                self._heartbeat_down[key] = True
+                message = f"BRIDGE ALERT [{key}]: {decision.reason}"
+                self._feed(message)
+                self._agent_feed("risk_manager", "BRIDGE", message)
+                logger.error(message)
+                if self.tg_controller and hasattr(self.tg_controller, "send_alert"):
+                    try:
+                        self.tg_controller.send_alert(f"<b>Vilona AI bridge alert</b>\n{message}")
+                    except Exception as e:
+                        logger.error(f"Failed to send bridge alert: {e}")
 
     def scan_cycle(self):
         symbols = getattr(self.cfg.trading, "symbols", None) or ["EURUSD"]
@@ -1015,8 +1038,9 @@ class QuantScanner:
             self._feed(f"ENTRY LOCK {symbol}: {freshness.reason}")
             logger.warning("Stale tick blocked %s: %s", symbol, freshness.reason)
             return
-        # Any accepted tick proves the link is alive; only freshness advances it.
-        self._last_heartbeat_tick_s = time.time()
+        # Any accepted tick proves only this routed bridge is alive.
+        heartbeat_key = self._heartbeat_key(route)
+        self._last_heartbeat_tick_s[heartbeat_key] = time.time()
 
         # Weekend guard uses broker tick time, never the host clock: the host may
         # sit in a different timezone and would otherwise allow Friday pre-close entries.

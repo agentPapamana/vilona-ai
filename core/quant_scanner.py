@@ -688,7 +688,7 @@ class QuantScanner:
             _owner = getattr(self.bridge, "bridge_for", None)
             llm_cfg = getattr(self.cfg, "llm", None)
             manager_enabled = bool(getattr(llm_cfg, "enabled", False))
-            from core.order_safety import MAGIC_BASE
+            from core.order_safety import MAGIC_BASE, resolve_min_stop_distance
             flatten_min = int(getattr(self.cfg.trading, "weekend_flatten_min", 60))
             paper_mode = bool(getattr(self.cfg, "paper_trading", False))
             for pos in positions:
@@ -735,8 +735,40 @@ class QuantScanner:
                 cur_px_val = float(pos.price_current or 0.0)
                 is_buy_val = pos.type == 0 or str(pos.type).lower() == "buy"
                 loss_val = (cur_px_val - open_px_val) if is_buy_val else (open_px_val - cur_px_val)
-                loss_limit = float(getattr(self.cfg.trading, "emergency_loss_atr_mult", 2.0)) * atr
                 owned = MAGIC_BASE <= int(getattr(pos, "magic", 0) or 0) < MAGIC_BASE + 1000
+                # Repair a missing broker-side stop before any LLM or trailing logic.
+                if owned and float(getattr(pos, "sl", 0.0) or 0.0) <= 0:
+                    stop_mult = float(getattr(self.cfg.trading, "emergency_stop_atr_mult", 1.5))
+                    emergency_sl = open_px_val - stop_mult * atr if is_buy_val else open_px_val + stop_mult * atr
+                    min_stop = resolve_min_stop_distance(pos.symbol, getattr(self.cfg, "trading", None))
+                    valid_side = emergency_sl < cur_px_val if is_buy_val else emergency_sl > cur_px_val
+                    valid_distance = abs(cur_px_val - emergency_sl) >= min_stop
+                    if digits is not None:
+                        emergency_sl = round(emergency_sl, dec)
+                    if valid_side and valid_distance and hasattr(owner, "modify_position_sltp"):
+                        try:
+                            result = owner.modify_position_sltp(pos.ticket, pos.symbol, sl=emergency_sl, tp=pos.tp)
+                            ok, msg = _trade_result(result)
+                            self._feed(f"EMERGENCY SL {pos.symbol} ticket={pos.ticket}: {emergency_sl} {'applied' if ok else 'FAILED'}")
+                            if not ok:
+                                logger.error("Emergency SL failed ticket=%s: %s", pos.ticket, msg)
+                        except Exception as exc:
+                            self._feed(f"EMERGENCY SL FAILED ticket={pos.ticket}: {exc}")
+                            logger.exception("Emergency SL failed for ticket=%s", pos.ticket)
+                    else:
+                        message = f"EMERGENCY SL INVALID {pos.symbol} ticket={pos.ticket}; closing unprotected position"
+                        self._feed(message)
+                        logger.error(message)
+                        if not paper_mode:
+                            try:
+                                result = owner.close_position(pos.ticket, pos.symbol, comment="unprotected position")
+                                ok, msg = _trade_result(result)
+                                if not ok:
+                                    self._feed(f"EMERGENCY CLOSE FAILED ticket={pos.ticket}: {msg}")
+                            except Exception as exc:
+                                self._feed(f"EMERGENCY CLOSE FAILED ticket={pos.ticket}: {exc}")
+                    continue
+                loss_limit = float(getattr(self.cfg.trading, "emergency_loss_atr_mult", 2.0)) * atr
                 if owned and loss_limit > 0 and loss_val <= -loss_limit:
                     message = f"LOSS GUARD {pos.symbol} ticket={pos.ticket}: loss {abs(loss_val):.6g} >= {loss_limit:.6g}"
                     self._feed(message)
@@ -917,7 +949,6 @@ class QuantScanner:
                     tp=float(pos.tp or 0.0), cur_sl=cur_sl, atr=atr, digits=dec,
                 )
                 if new_sl is not None:
-                    from core.order_safety import resolve_min_stop_distance
                     min_stop = resolve_min_stop_distance(pos.symbol, getattr(self.cfg, "trading", None))
                     if min_stop > 0 and abs(cur_px - new_sl) < min_stop:
                         new_sl = None  # broker would reject a stop this close to price

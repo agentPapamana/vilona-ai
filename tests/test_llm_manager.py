@@ -38,3 +38,42 @@ def test_position_manager_accepts_close():
     snapshot = SimpleNamespace(symbol="XAUUSD", tick_bid=4005, tick_ask=4005.2, spread_pct=0.005, atr_15m=5)
     result = position_decision(FakeClient('{"action":"CLOSE","reason":"reversal"}'), position, snapshot, 1)
     assert result["action"] == "CLOSE"
+
+
+def test_position_prompt_contains_explicit_risk_state():
+    class CapturingClient(FakeClient):
+        async def generate_signal(self, system_prompt, user_prompt):
+            self.system_prompt = system_prompt
+            self.user_prompt = user_prompt
+            return self.response
+
+    client = CapturingClient('{"action":"HOLD","reason":"trend intact"}')
+    position = SimpleNamespace(
+        ticket=2, symbol="EURUSD", type=1, volume=0.1,
+        price_open=1.1, price_current=1.101, sl=1.09, tp=1.15, profit=1,
+    )
+    snapshot = SimpleNamespace(
+        symbol="EURUSD", tick_bid=1.1009, tick_ask=1.1011,
+        spread_pct=0.01, atr_15m=0.002, candles_15m=[], trend_tp_candidate=None,
+    )
+
+    result = position_decision(client, position, snapshot, 1)
+
+    assert result["action"] == "HOLD"
+    assert '"gain_atr": -0.5' in client.user_prompt
+    assert '"sl_protects_entry": true' in client.user_prompt
+    assert "never close solely because profit is negative" in client.system_prompt
+
+
+def test_position_manager_timeout_returns_none():
+    class SlowClient(FakeClient):
+        async def generate_signal(self, system_prompt, user_prompt):
+            await asyncio.sleep(0.05)
+            return self.response
+
+    position = SimpleNamespace(ticket=3, symbol="EURUSD", type=0, volume=0.1,
+                               price_open=1.1, price_current=1.101, sl=1.09, tp=1.12, profit=1)
+    snapshot = SimpleNamespace(symbol="EURUSD", tick_bid=1.1009, tick_ask=1.1011,
+                               spread_pct=0.01, atr_15m=0.002, candles_15m=[])
+
+    assert position_decision(SlowClient('{"action":"CLOSE"}'), position, snapshot, 0.001) is None

@@ -42,20 +42,22 @@ class _RecordingBridge:
         return SimpleNamespace(success=True, message="closed")
 
 
-def _candles(count=30, atr_val=1.0):
+def _candles(count=30, atr_val=1.0, trend: float = 0.1):
+    """Closes rising by ``trend`` per bar; 0.0 gives the flat feed used by the
+    LLM target-validation tests so the deterministic trend filter stays out."""
     rows = []
     for i in range(count):
-        c = 100.0 + i * 0.1
+        c = 100.0 + i * trend
         rows.append({"time": 1700000000 + i * 900, "open": c, "high": c + atr_val, "low": c, "close": c + 0.5})
     return rows
 
 
-def _make_scanner(monkeypatch, llm_decision, position, tick, atr_val=1.0):
+def _make_scanner(monkeypatch, llm_decision, position, tick, atr_val=1.0, trend: float = 0.1):
     from core import state_db as state_db_mod
     monkeypatch.setattr(state_db_mod, "get_config", lambda: SimpleNamespace(
         database=SimpleNamespace(path=":memory:")
     ))
-    candles = _candles(30, atr_val)
+    candles = _candles(30, atr_val, trend)
     info = SimpleNamespace(digits=2, point=0.01, tick_size=0.01, tick_value=1.0)
     bridge = _RecordingBridge([position], tick, candles, info)
     cfg = SimpleNamespace(
@@ -78,7 +80,7 @@ def test_tp_extension_allowed_when_sl_already_protects_entry(monkeypatch):
     )
     tick = SimpleNamespace(bid=103.0, ask=103.1, timestamp_ms=1700000000000)
     decision = {"action": "MODIFY", "reason": "strong trend", "sl_price": 101.5, "tp_price": 108.0}
-    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=2.0)
+    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=2.0, trend=0.0)
 
     scanner.manage_open_positions()
 
@@ -97,7 +99,7 @@ def test_tp_extension_refused_when_position_not_risk_free(monkeypatch):
     tick = SimpleNamespace(bid=101.0, ask=101.1, timestamp_ms=1700000000000)
     # LLM tightens SL to 99 (still below entry) and tries to extend TP to 110.
     decision = {"action": "MODIFY", "reason": "extend target", "sl_price": 99.0, "tp_price": 110.0}
-    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=1.0)
+    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=1.0, trend=0.0)
 
     scanner.manage_open_positions()
 
@@ -134,7 +136,7 @@ def test_tp_extension_capped_at_six_atr_from_entry(monkeypatch):
     )
     tick = SimpleNamespace(bid=104.0, ask=104.1, timestamp_ms=1700000000000)
     decision = {"action": "MODIFY", "reason": "moonshot target", "sl_price": 102.0, "tp_price": 120.0}
-    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=2.0)
+    scanner, bridge = _make_scanner(monkeypatch, decision, pos, tick, atr_val=2.0, trend=0.0)
 
     scanner.manage_open_positions()
 
@@ -283,3 +285,33 @@ def test_llm_tightens_sl_on_losing_position(monkeypatch):
     call = bridge.modify_calls[0]
     assert call["ticket"] == 7021
     assert call["sl"] == pytest.approx(158.500)
+
+
+def test_trend_tp_extension_requires_near_target_and_aligned_momentum():
+    from core.quant_scanner import trend_tp_target
+
+    closes = [100.5 + i * 0.2 for i in range(40)]
+    assert trend_tp_target(
+        is_buy=True, open_px=100.0, cur_px=103.0, current_tp=104.0,
+        atr=1.0, closes=closes,
+    ) == pytest.approx(105.0)
+    assert trend_tp_target(
+        is_buy=True, open_px=100.0, cur_px=103.0, current_tp=110.0,
+        atr=1.0, closes=closes,
+    ) is None
+
+
+def test_emergency_stop_uses_current_price_when_still_protective(monkeypatch):
+    pos = SimpleNamespace(
+        ticket=7090, symbol="EURUSD", type="buy", volume=0.01,
+        price_open=100.0, price_current=110.0, sl=0.0, tp=120.0,
+        magic=MAGIC_BASE + 1,
+    )
+    tick = SimpleNamespace(bid=110.0, ask=110.1, timestamp_ms=1700000000000)
+    scanner, bridge = _make_scanner(monkeypatch, None, pos, tick, atr_val=2.0, trend=0.0)
+    scanner.cfg.trading.emergency_stop_atr_mult = 1.5
+
+    scanner.manage_open_positions()
+
+    assert bridge.modify_calls[0]["sl"] == pytest.approx(107.0)
+    assert bridge.modify_calls[0]["tp"] == pytest.approx(120.0)

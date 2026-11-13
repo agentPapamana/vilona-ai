@@ -150,6 +150,26 @@ def compute_rsi(series: List[float], period: int = 14) -> float:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+def trend_tp_target(*, is_buy: bool, open_px: float, cur_px: float, current_tp: float,
+                    atr: float, closes: List[float]) -> Optional[float]:
+    """Extend TP during a confirmed short-term trend; never retract a target."""
+    if atr <= 0 or len(closes) < 22:
+        return None
+    ema_fast = compute_ema(closes[-21:], 9)
+    ema_slow = compute_ema(closes[-21:], 21)
+    aligned = ema_fast > ema_slow if is_buy else ema_fast < ema_slow
+    directional_move = (cur_px - open_px) if is_buy else (open_px - cur_px)
+    tp_dist = ((current_tp - open_px) if is_buy else (open_px - current_tp)) if current_tp > 0 else 0.0
+    # Avoid moving a distant target early: extend only once price is near it.
+    if not aligned or directional_move < 0.5 * atr or tp_dist <= 0 or directional_move < 0.7 * tp_dist:
+        return None
+    candidate = cur_px + (2.0 * atr if is_buy else -2.0 * atr)
+    cap = open_px + (6.0 * atr if is_buy else -6.0 * atr)
+    candidate = min(candidate, cap) if is_buy else max(candidate, cap)
+    improves = candidate > current_tp if is_buy else candidate < current_tp
+    return candidate if improves else None
+
+
 def _error_type_from(detail: str, original_exc: Optional[BaseException] = None) -> str:
     """Extract a stable error class name from an llm_gate error detail string.
 
@@ -739,13 +759,22 @@ class QuantScanner:
                 # Repair a missing broker-side stop before any LLM or trailing logic.
                 if owned and float(getattr(pos, "sl", 0.0) or 0.0) <= 0:
                     stop_mult = float(getattr(self.cfg.trading, "emergency_stop_atr_mult", 1.5))
-                    emergency_sl = open_px_val - stop_mult * atr if is_buy_val else open_px_val + stop_mult * atr
+                    entry_candidate = open_px_val - stop_mult * atr if is_buy_val else open_px_val + stop_mult * atr
+                    market_candidate = cur_px_val - stop_mult * atr if is_buy_val else cur_px_val + stop_mult * atr
+                    entry_valid = entry_candidate < cur_px_val if is_buy_val else entry_candidate > cur_px_val
+                    # Prefer a current-price anchored stop when it is on the
+                    # protective side of both entry and market. Otherwise use
+                    # the entry-anchored fallback, never a stop beyond the market.
+                    current_valid = ((market_candidate < cur_px_val) if is_buy_val
+                                     else (market_candidate > cur_px_val))
+                    emergency_sl = market_candidate if current_valid else entry_candidate
+                    emergency_valid = current_valid or entry_valid
                     min_stop = resolve_min_stop_distance(pos.symbol, getattr(self.cfg, "trading", None))
                     valid_side = emergency_sl < cur_px_val if is_buy_val else emergency_sl > cur_px_val
                     valid_distance = abs(cur_px_val - emergency_sl) >= min_stop
                     if digits is not None:
                         emergency_sl = round(emergency_sl, dec)
-                    if valid_side and valid_distance and hasattr(owner, "modify_position_sltp"):
+                    if emergency_valid and valid_side and valid_distance and hasattr(owner, "modify_position_sltp"):
                         try:
                             result = owner.modify_position_sltp(pos.ticket, pos.symbol, sl=emergency_sl, tp=pos.tp)
                             ok, msg = _trade_result(result)
@@ -826,6 +855,29 @@ class QuantScanner:
                                     tick_value=float(getattr(info, "tick_value", 0.0) or 0.0),
                                     tick_size=float(getattr(info, "tick_size", 0.0) or 0.0),
                                 )
+                                snapshot.trend_tp_candidate = trend_tp_target(
+                                    is_buy=is_buy_val, open_px=open_px_val, cur_px=cur_px_val,
+                                    current_tp=tp_val, atr=atr,
+                                    closes=[float(c.get("close", 0)) for c in candles if isinstance(c, dict)],
+                                )
+                                trend_candidate = snapshot.trend_tp_candidate
+                                sl_val = float(pos.sl or 0.0)
+                                risk_free = sl_val > 0 and ((sl_val >= open_px_val) if is_buy_val else (sl_val <= open_px_val))
+                                if trend_candidate is not None and risk_free:
+                                    current_tp_now = float(pos.tp or 0.0)
+                                    trend_candidate = round(float(trend_candidate), dec) if digits is not None else float(trend_candidate)
+                                    valid_tp = ((trend_candidate > cur_px_val and (current_tp_now <= 0 or trend_candidate > current_tp_now)) if is_buy_val else (trend_candidate < cur_px_val and (current_tp_now <= 0 or trend_candidate < current_tp_now)))
+                                    if valid_tp:
+                                        try:
+                                            fast_result = owner.modify_position_sltp(pos.ticket, pos.symbol, sl=sl_val, tp=trend_candidate)
+                                            fast_ok, fast_msg = _trade_result(fast_result)
+                                            if fast_ok:
+                                                pos.tp = trend_candidate
+                                                self._feed(f"TREND TP {pos.symbol} ticket={pos.ticket}: {trend_candidate}")
+                                            else:
+                                                logger.warning("Deterministic trend TP failed ticket=%s: %s", pos.ticket, fast_msg)
+                                        except Exception:
+                                            logger.exception("Deterministic trend TP failed ticket=%s", pos.ticket)
                                 from core.llm_manager import position_decision
                                 from llm.client import get_llm_client
                                 decision = position_decision(

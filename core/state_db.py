@@ -386,23 +386,32 @@ class StateDB:
                 (key, value)
             )
             self._conn.commit()
-    def get_start_balance(self) -> float | None:
-        raw = self.get_setting("start_balance")
+    @staticmethod
+    def _account_key(account: str) -> str:
+        """Namespace risk settings per account; ``default`` keeps legacy rows."""
+        key = (account or "").strip()
+        return f"account:{key}" if key else "default"
+
+    def get_start_balance(self, account: str = "") -> float | None:
+        raw = self.get_setting(f"{self._account_key(account)}:start_balance")
         try:
             return float(raw) if raw is not None else None
         except ValueError:
             return None
 
-    def set_start_balance(self, balance: float, account_login: int = 0) -> None:
-        self.set_setting("start_balance", str(float(balance)))
-        self.set_setting("start_balance_login", str(int(account_login)))
-        self.set_setting("start_balance_recorded_at", str(time.time()))
+    def set_start_balance(self, balance: float, account_login: int = 0, account: str = "") -> None:
+        scope = self._account_key(account)
+        self.set_setting(f"{scope}:start_balance", str(float(balance)))
+        self.set_setting(f"{scope}:start_balance_login", str(int(account_login)))
+        self.set_setting(f"{scope}:start_balance_recorded_at", str(time.time()))
 
-    def is_drawdown_latched(self) -> bool:
-        return self.get_setting("total_drawdown_latched") == "true"
+    def is_drawdown_latched(self, account: str = "") -> bool:
+        return self.get_setting(f"{self._account_key(account)}:total_drawdown_latched") == "true"
 
-    def latch_drawdown(self, active: bool = True) -> None:
-        self.set_setting("total_drawdown_latched", "true" if active else "false")
+    def latch_drawdown(self, active: bool = True, account: str = "") -> None:
+        self.set_setting(
+            f"{self._account_key(account)}:total_drawdown_latched", "true" if active else "false"
+        )
 
     def is_consecutive_loss_latched(self) -> bool:
         return self.get_setting("consecutive_loss_latched") == "true"
@@ -410,8 +419,13 @@ class StateDB:
     def latch_consecutive_loss(self, active: bool = True) -> None:
         self.set_setting("consecutive_loss_latched", "true" if active else "false")
 
-    def reset_risk_latches(self, reason: str = "") -> None:
-        self.latch_drawdown(False)
+    def reset_risk_latches(self, reason: str = "", account: str = "") -> None:
+        scope = self._account_key(account)
+        self.latch_drawdown(False, account=account)
+        self.set_setting(f"{scope}:risk_latches_reset_reason", reason)
+        self.set_setting(f"{scope}:risk_latches_reset_at", str(time.time()))
+        if account:
+            return
         self.latch_consecutive_loss(False)
         self.set_setting("risk_latches_reset_reason", reason)
         self.set_setting("risk_latches_reset_at", str(time.time()))

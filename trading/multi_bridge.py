@@ -102,11 +102,23 @@ class MultiMarketBridge:
     def close_position(self, ticket: int, symbol: str, *args, **kwargs):
         return self.bridge_for(symbol).close_position(ticket, symbol, *args, **kwargs)
 
-    def get_history_deals(self, since_epoch: float):
+    def get_history_deals(self, since_epoch: float, symbol: Optional[str] = None):
+        if symbol is not None:
+            bridge = self.bridge_for(symbol)
+            getter = getattr(bridge, "get_history_deals", None)
+            if not callable(getter):
+                return None
+            try:
+                return getter(since_epoch, symbol=symbol)
+            except TypeError:
+                return getter(since_epoch)
         deals = []
         for bridge in self._bridges():
             if hasattr(bridge, "get_history_deals"):
-                deals.extend(bridge.get_history_deals(since_epoch) or [])
+                current = bridge.get_history_deals(since_epoch)
+                if current is None:
+                    return None
+                deals.extend(current)
         return deals
 
     def calculate_daily_pl(self, symbol: str):

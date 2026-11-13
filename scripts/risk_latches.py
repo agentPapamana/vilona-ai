@@ -77,8 +77,9 @@ def cmd_init_balance(db: StateDB, args) -> int:
         print("ERROR: could not read a positive equity from the bridge; "
               "pass --value to record it explicitly", file=sys.stderr)
         return 1
-    db.set_start_balance(balance, account_login=login)
-    print(f"start_balance recorded: {balance:.2f} (login {login})")
+    db.set_start_balance(balance, account_login=login, account=args.account)
+    scope = db._account_key(args.account)
+    print(f"start_balance[{scope}] recorded: {balance:.2f} (login {login})")
     print("Drawdown lock threshold (D2, "
           f"{get_config().trading.max_total_drawdown_pct:.2f}%): "
           f"{balance * (1 - get_config().trading.max_total_drawdown_pct / 100.0):.2f}")
@@ -87,21 +88,22 @@ def cmd_init_balance(db: StateDB, args) -> int:
 
 def cmd_status(db: StateDB, args) -> int:
     cfg = get_config()
-    start = db.get_start_balance()
-    print(f"start_balance:            {start}")
-    print(f"start_balance_login:      {db.get_setting('start_balance_login')}")
-    print(f"recorded_at:              {db.get_setting('start_balance_recorded_at')}")
-    print(f"max_total_drawdown_pct:   {cfg.trading.max_total_drawdown_pct}")
-    print(f"total_drawdown_latched:   {db.is_drawdown_latched()}")
-    print(f"max_consecutive_losses:   {cfg.trading.max_consecutive_losses}")
-    print(f"consecutive_loss_latched: {db.is_consecutive_loss_latched()}")
+    scope = db._account_key(args.account)
+    start = db.get_start_balance(args.account)
+    print(f"start_balance[{scope}]:      {start}")
+    print(f"start_balance_login[{scope}]: {db.get_setting(f'{scope}:start_balance_login')}")
+    print(f"recorded_at[{scope}]:         {db.get_setting(f'{scope}:start_balance_recorded_at')}")
+    print(f"max_total_drawdown_pct:      {cfg.trading.max_total_drawdown_pct}")
+    print(f"total_drawdown_latched[{scope}]: {db.is_drawdown_latched(args.account)}")
+    print(f"max_consecutive_losses:       {cfg.trading.max_consecutive_losses}")
+    print(f"consecutive_loss_latched:     {db.is_consecutive_loss_latched()}")
     try:
         reset_trade_id = int(db.get_setting("risk_latches_reset_trade_id") or 0)
     except (TypeError, ValueError):
         reset_trade_id = 0
-    print(f"consecutive_loss_count:   {consecutive_loss_count(db.get_trades(limit=1000), after_trade_id=reset_trade_id)}")
-    print(f"last_reset_reason:        {db.get_setting('risk_latches_reset_reason')}")
-    print(f"last_reset_at:            {db.get_setting('risk_latches_reset_at')}")
+    print(f"consecutive_loss_count:        {consecutive_loss_count(db.get_trades(limit=1000), after_trade_id=reset_trade_id)}")
+    print(f"last_reset_reason:             {db.get_setting(f'{scope}:risk_latches_reset_reason')}")
+    print(f"last_reset_at:                 {db.get_setting(f'{scope}:risk_latches_reset_at')}")
     return 0
 
 
@@ -109,8 +111,8 @@ def cmd_reset(db: StateDB, args) -> int:
     if not args.reason.strip():
         print("ERROR: --reason is required; the reset is recorded in settings", file=sys.stderr)
         return 1
-    db.reset_risk_latches(args.reason.strip())
-    print(f"latches cleared: {args.reason.strip()}")
+    db.reset_risk_latches(args.reason.strip(), account=args.account)
+    print(f"latches cleared for {db._account_key(args.account)}: {args.reason.strip()}")
     return 0
 
 
@@ -123,13 +125,16 @@ def main() -> int:
                         help="explicit balance; default reads equity from the bridge")
     p_init.add_argument("--source", choices=["bridge", "value"], default="bridge",
                         help="accepted for symmetry; --value decides the source")
+    p_init.add_argument("--account", default="", help="venue/account namespace")
     p_init.set_defaults(func=cmd_init_balance)
 
     p_status = sub.add_parser("status", help="show guard state")
+    p_status.add_argument("--account", default="", help="venue/account namespace")
     p_status.set_defaults(func=cmd_status)
 
     p_reset = sub.add_parser("reset", help="clear both latches with a recorded reason")
     p_reset.add_argument("--reason", required=True, help="why the latches are cleared")
+    p_reset.add_argument("--account", default="", help="venue/account namespace")
     p_reset.set_defaults(func=cmd_reset)
 
     args = parser.parse_args()

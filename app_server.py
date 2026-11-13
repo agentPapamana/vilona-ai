@@ -15,6 +15,7 @@ from ui.telegram_controller import TelegramController
 from ui.terminal_dashboard import TerminalDashboard
 from ui.system_tray import SystemTrayApp
 from trading.multi_bridge import MultiMarketBridge
+from core.quant_scanner import QuantScanner
 
 logger = logging.getLogger('vilona-ai')
 

@@ -78,6 +78,34 @@ class CCXTBridge:
         self._symbol_info_cache: Dict[str, SymbolInfo] = {}
         self._magic_numbers: Dict[str, int] = {}
 
+
+    def _history_symbols(self, markets: Dict[str, Any]) -> Optional[List[str]]:
+        """Resolve active contract symbols without scanning every venue market."""
+        try:
+            positions = self._exchange.fetch_positions()
+        except Exception:
+            logger.warning("[CCXTBridge] Position book unavailable; realized P/L cannot be scoped")
+            return None
+        if positions is None:
+            return None
+        symbols: List[str] = []
+        for position in positions:
+            symbol = position.get("symbol")
+            market = markets.get(symbol)
+            if market and market.get("contract") and symbol not in symbols:
+                symbols.append(symbol)
+        if symbols:
+            return symbols
+        configured = getattr(self.exchange_config, "symbols", None)
+        if not configured:
+            return None
+        for symbol in configured:
+            resolved = self.resolve_symbol(symbol)
+            market = markets.get(resolved)
+            if market and market.get("contract") and resolved not in symbols:
+                symbols.append(resolved)
+        return symbols or None
+
     def _classify_error(self, e):
         """Classify ccxt error into 'transient', 'fatal', or 'unknown'."""
         if isinstance(e, (ccxt.NetworkError, ccxt.RequestTimeout, ccxt.RateLimitExceeded,
@@ -597,7 +625,72 @@ class CCXTBridge:
                 return server_time
         except Exception:
             pass
-        return int(time.time() * 1000)
+
+    def get_server_day_start(self, now_epoch: float) -> Optional[float]:
+        """Return UTC midnight for the exchange's current UTC trading day."""
+        try:
+            now = float(now_epoch)
+            if not self._exchange or not math.isfinite(now) or now <= 0:
+                return None
+            server_ms = self._exchange.fetch_time()
+            if not isinstance(server_ms, (int, float)) or not math.isfinite(float(server_ms)):
+                return None
+            server_epoch = float(server_ms) / 1000.0
+            boundary = float(int(server_epoch // 86400) * 86400)
+            return boundary if 0 < boundary <= now else None
+        except Exception:
+            logger.exception("[CCXTBridge] Exchange-day boundary unavailable")
+            return None
+
+    def get_history_deals(self, since_epoch: float, symbol: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """Return normalized realized contracts from the venue's closed-PnL API."""
+        try:
+            since = float(since_epoch)
+            if not self._exchange or not math.isfinite(since) or since <= 0:
+                return None
+            markets = getattr(self._exchange, "markets", {}) or {}
+            if symbol is not None:
+                resolved = self.resolve_symbol(symbol)
+                market = markets.get(resolved)
+                if not market or not market.get("contract"):
+                    return None
+                symbols = [resolved]
+            else:
+                symbols = self._history_symbols(markets)
+            if not symbols:
+                return None
+            records: List[Dict[str, Any]] = []
+            for resolved in symbols:
+                market = markets[resolved]
+                params = {
+                    "category": "linear" if market.get("linear", True) else "inverse",
+                    "symbol": market.get("id", resolved.replace("/", "").replace(":USDT", "")),
+                    "startTime": int(since * 1000),
+                    "limit": 100,
+                }
+                endpoint = getattr(self._exchange, "private_get_v5_position_closed_pnl", None)
+                if not callable(endpoint):
+                    return None
+                payload = endpoint(params)
+                if not isinstance(payload, dict) or payload.get("retCode") not in (0, "0"):
+                    return None
+                rows = (payload.get("result") or {}).get("list")
+                if not isinstance(rows, list):
+                    return None
+                for row in rows:
+                    profit = float(row.get("closedPnl"))
+                    fee = float(row.get("openFee") or 0.0) + float(row.get("closeFee") or 0.0)
+                    if not math.isfinite(profit) or not math.isfinite(fee):
+                        return None
+                    records.append({
+                        "symbol": resolved, "profit": profit, "commission": 0.0,
+                        "swap": 0.0, "fee": -abs(fee),
+                        "time": int(row.get("updatedTime") or 0) // 1000,
+                    })
+            return records
+        except Exception:
+            logger.exception("[CCXTBridge] Realized trade history unavailable")
+            return None
 
     def get_account_info(self) -> Optional[AccountInfo]:
         """Read account equity so risk gates fail closed instead of trading blind."""

@@ -926,6 +926,18 @@ class QuantScanner:
         logger.error("%s", error)
         return False
 
+    @staticmethod
+    def _risk_account_key(route) -> str:
+        """Use venue plus broker login/currency so unrelated accounts never share drawdown."""
+        venue = type(route).__name__
+        getter = getattr(route, "get_account_info", None)
+        account = getter() if callable(getter) else None
+        login = getattr(account, "login", 0) if account else 0
+        currency = getattr(account, "currency", "") if account else ""
+        if login:
+            return f"{venue}:{login}:{currency or 'unknown'}"
+        return f"{venue}:{currency or getattr(route, 'account_currency', 'unknown')}"
+
     def evaluate_symbol(self, symbol: str):
         # Global capacity check: count the whole book, not just this symbol.
         # Counting per symbol let 4 symbols each hold max_concurrent_positions,
@@ -1186,20 +1198,21 @@ class QuantScanner:
         # Total drawdown and consecutive-loss locks require their StateDB protocol.
         get_start_balance = getattr(self.db, "get_start_balance", None)
         if callable(get_start_balance):
+            account = self._risk_account_key(route)
             set_start_balance = getattr(self.db, "set_start_balance", None)
-            is_drawdown_latched = getattr(self.db, "is_drawdown_latched", lambda: False)
-            latch_drawdown = getattr(self.db, "latch_drawdown", lambda: None)
-            if get_start_balance() is None and equity is not None and callable(set_start_balance):
-                set_start_balance(equity)
+            is_drawdown_latched = getattr(self.db, "is_drawdown_latched", lambda **kwargs: False)
+            latch_drawdown = getattr(self.db, "latch_drawdown", lambda **kwargs: None)
+            if get_start_balance(account) is None and equity is not None and callable(set_start_balance):
+                set_start_balance(equity, account_login=0, account=account)
             drawdown = evaluate_total_drawdown(
                 equity_usd=equity,
-                start_balance_usd=get_start_balance(),
+                start_balance_usd=get_start_balance(account),
                 max_drawdown_pct=float(getattr(self.cfg.trading, "max_total_drawdown_pct", 0.0)),
-                latched=bool(is_drawdown_latched()),
+                latched=bool(is_drawdown_latched(account)),
             )
             if not drawdown.allowed:
                 if drawdown.reason == "total drawdown threshold reached":
-                    latch_drawdown()
+                    latch_drawdown(account=account)
                 self._feed(f"ENTRY LOCK {symbol}: {drawdown.reason}")
                 logger.warning("Entry lock blocked %s: %s", symbol, drawdown.reason)
                 return

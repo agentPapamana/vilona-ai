@@ -264,3 +264,36 @@ def test_mt5_venue_keeps_the_weekend_guard():
 
     assert scanner._is_forex_venue()
     assert any("ENTRY LOCK BTC/USDT" in line for line in feed), feed
+
+
+def test_ccxt_risk_lock_reads_server_day_and_realized_contract_trades():
+    from core.risk_lock import daily_pl_from_bridge_day, evaluate_entry_lock
+
+    class HistoryExchange(FakeExchange):
+        def __init__(self):
+            super().__init__()
+            self.markets[self.symbol].update({"contract": True, "linear": True, "id": "BTCUSDT"})
+            self.history_calls = []
+
+        def private_get_v5_position_closed_pnl(self, params):
+            self.history_calls.append(params)
+            return {"retCode": 0, "result": {"list": [{
+                "updatedTime": "1700000100000", "closedPnl": "-5.00",
+                "openFee": "0.10", "closeFee": "0.15",
+            }]}}
+
+    exchange = HistoryExchange()
+    bridge = _bridge(exchange=exchange)
+    assert bridge.get_server_day_start(1700001000) == 1699920000
+    daily_pl = daily_pl_from_bridge_day(bridge, now_epoch=1700001000)
+    assert daily_pl == -5.25
+    assert exchange.history_calls[0]["symbol"] == "BTCUSDT"
+    decision = evaluate_entry_lock(
+        kill_switch=False, daily_pl_usd=daily_pl, equity_usd=1000, max_daily_loss_pct=2,
+    )
+    assert decision.allowed
+
+
+def test_ccxt_history_fails_closed_without_closed_pnl_endpoint():
+    bridge = _bridge()
+    assert bridge.get_history_deals(1699920000) is None

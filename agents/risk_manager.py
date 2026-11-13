@@ -112,7 +112,6 @@ def evaluate(
     lot_min = lot_min or float(getattr(cfg, "min_lot", 0.01) or 0.01)
     lot_max = lot_max or float(getattr(cfg, "max_lot", 50.0) or 50.0)
     configured_max_lot = getattr(cfg, "max_lot", lot_max) or lot_max
-    lot_max = min(lot_max, float(configured_max_lot))
     lot = round(round(raw_lot / lot_step) * lot_step, 4)
     lot = min(lot, lot_max)
     minimum_volume_override = lot < lot_min
@@ -122,45 +121,39 @@ def evaluate(
             reason=f"broker minimum volume {lot_min:g} exceeds max lot {lot_max:g}",
         )
     if minimum_volume_override:
+        # The broker minimum may be used only when its stop-loss risk is still
+        # within the configured account risk budget. Never bypass risk sizing
+        # merely because the account cannot trade a smaller volume.
+        minimum_lot_risk = lot_min * per_lot_risk
+        if minimum_lot_risk > risk_usd:
+            return RiskVerdict(
+                False,
+                reason=(f"minimum lot risk {minimum_lot_risk:.2f} exceeds "
+                        f"max risk {risk_usd:.2f}"),
+            )
         lot = lot_min
 
-    # Hard safety caps. Both are expressed in notional terms so they are
-    # independent of how tight the stop happens to be.
-    positions = open_positions or []
-    existing_notional = 0.0
-    for position in positions:
-        p_symbol = getattr(position, "symbol", "")
-        p_volume = float(getattr(position, "volume", 0.0) or 0.0)
-        p_price = float(getattr(position, "price_current", 0.0) or 0.0)
-        if p_price <= 0:
-            p_price = float(getattr(position, "price_open", 0.0) or 0.0)
-        existing_notional += estimate_notional(p_symbol, p_volume, p_price)
-    per_lot_notional = estimate_notional(snapshot.symbol, 1.0, entry)
-
-    cent_minimum_override = minimum_volume_override and str(getattr(snapshot, "symbol", "") or "").lower().endswith("c")
-    if per_lot_notional > 0 and not cent_minimum_override:
-        # Hard exposure caps win for normal contracts. Cent contracts size in
-        # the broker minimum lot as their atomic unit, so the override keeps
-        # that lot and relies on the broker margin check plus configured caps.
-        if free_margin is not None and free_margin > 0:
-            margin_lot_cap = (free_margin * 0.10) / per_lot_notional
-            if margin_lot_cap < lot_min:
-                return RiskVerdict(False, reason="notional exposure limit exceeded")
-            lot = min(lot, margin_lot_cap)
-            lot = round((lot // lot_step) * lot_step, 4)
-        notional_budget = max(0.0, equity_usd * 2.0 - existing_notional)
-        if notional_budget <= 0 or notional_budget / per_lot_notional < lot_min:
+    # Standard contracts use price-based exposure caps; cent-symbol broker
+    # units do not map to the USD-equity notional and use stop-risk sizing.
+    if not str(getattr(snapshot, "symbol", "") or "").lower().endswith("c"):
+        positions = open_positions or []
+        existing_notional = sum(
+            estimate_notional(getattr(p, "symbol", ""), float(getattr(p, "volume", 0.0) or 0.0),
+                              float(getattr(p, "price_current", 0.0) or getattr(p, "price_open", 0.0) or 0.0))
+            for p in positions
+        )
+        per_lot_notional = estimate_notional(snapshot.symbol, 1.0, entry)
+        if per_lot_notional > 0 and free_margin is not None and free_margin > 0:
+            lot = min(lot, (free_margin * 0.10) / per_lot_notional)
+        budget = max(0.0, equity_usd * 2.0 - existing_notional)
+        if budget <= 0:
             return RiskVerdict(False, reason="notional exposure limit exceeded")
-        lot = min(lot, notional_budget / per_lot_notional)
-    # exposure cap reduced the calculated volume to zero. Never send a zero-lot
-    # verdict for a symbol whose minimum is within the configured hard cap.
-    if lot <= 0 and lot_min > 0:
-        if lot_min > lot_max:
-            return RiskVerdict(False, reason=f"broker minimum volume {lot_min:g} exceeds max lot {lot_max:g}")
-        lot = lot_min
-        minimum_volume_override = True
+        if per_lot_notional > 0:
+            lot = min(lot, budget / per_lot_notional)
+        lot = round((lot // lot_step) * lot_step, 4)
     if lot <= 0:
         return RiskVerdict(False, reason="computed lot=0")
+
 
     rr = tp_dist / sl_dist if sl_dist else 0.0
     return RiskVerdict(

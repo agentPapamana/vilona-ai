@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Vilona SQLite backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+Unit=vilona-db-backup.service
+
+[Install]
+WantedBy=timers.target

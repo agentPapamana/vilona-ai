@@ -1,0 +1,7 @@
+[Unit]
+Description=Vilona SQLite database backup
+
+[Service]
+Type=oneshot
+WorkingDirectory=/mnt/hermes-workspace/Apps/vilona-ai
+ExecStart=/mnt/hermes-workspace/Apps/vilona-ai/.venv/bin/python /mnt/hermes-workspace/Apps/vilona-ai/scripts/backup_db.py --keep 14

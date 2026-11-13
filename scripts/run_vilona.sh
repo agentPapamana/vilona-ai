@@ -10,8 +10,8 @@ DATABASE="$APP_DIR/vilona_v2.db"
 MODE="${1:-paper}"
 DEBUG="${2:-}"
 
-export vilona_PAPER_TRADING="${MODE}"
-export vilona_LOG_LEVEL="${DEBUG:+DEBUG:-INFO}"
+export KINGAI_PAPER_TRADING="${MODE}"
+export KINGAI_LOG_LEVEL="${DEBUG:+DEBUG:-INFO}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'

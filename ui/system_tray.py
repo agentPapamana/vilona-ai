@@ -5,37 +5,44 @@ import threading
 from typing import Any, Optional
 from pathlib import Path
 
-import pystray
-from pystray import MenuItem as Item, Menu
-from PIL import Image, ImageDraw
-
 logger = logging.getLogger(__name__)
 
 
 class SystemTrayApp:
+    """Windows-only system tray. Import pystray/PIL lazily so this module can be
+    imported on headless Linux where the GTK backend is unavailable."""
+
     def __init__(self, bridge: Any, config: Any, telegram_controller: Any = None):
         self.bridge = bridge
         self.config = config
         self.telegram = telegram_controller
-        self._icon: Optional[pystray.Icon] = None
+        self._icon = None
         self._running = False
         self._status = "Stopped"
 
-    def _create_icon_image(self) -> Image:
-        # Create a simple 32x32 icon programmatically
+    @staticmethod
+    def _load_backend():
+        """Import pystray and PIL on demand. Raises ImportError off Windows."""
+        import pystray
+        from PIL import Image, ImageDraw
+        return pystray, Image, ImageDraw
+
+    def _create_icon_image(self):
+        _, Image, ImageDraw = self._load_backend()
         size = 32
         image = Image.new('RGB', (size, size), '#1a1a2e')
         draw = ImageDraw.Draw(image)
-        
-        # Draw a simple robot face
+
         draw.ellipse([4, 4, 28, 28], fill='#16213e', outline='#0f3460')
         draw.ellipse([10, 10, 14, 14], fill='#00d9ff')  # Left eye
         draw.ellipse([18, 10, 22, 14], fill='#00d9ff')  # Right eye
         draw.arc([8, 18, 24, 24], 0, 180, fill='#00d9ff', width=2)  # Smile
-        
+
         return image
 
-    def _build_menu(self) -> Menu:
+    def _build_menu(self):
+        pystray, _, _ = self._load_backend()
+        from pystray import MenuItem as Item, Menu
         return Menu(
             Item(f"Status: {self._status}", lambda: None, enabled=False),
             Item("─" * 20, lambda: None, enabled=False),
@@ -49,37 +56,37 @@ class SystemTrayApp:
             Item("❌ Exit", self._on_exit),
         )
 
-    def _on_start(self, icon: pystray.Icon, item: Item):
+    def _on_start(self, icon, item):
         self._status = "Running"
         icon.title = "Vilona AI v2 - Running"
         self._notify("Scanner Started", "Vilona AI is now scanning for trades.")
         logger.info("Scanner started via system tray")
 
-    def _on_stop(self, icon: pystray.Icon, item: Item):
+    def _on_stop(self, icon, item):
         self._status = "Stopped"
         icon.title = "Vilona AI v2 - Stopped"
         self._notify("Scanner Stopped", "Vilona AI has stopped scanning.")
         logger.info("Scanner stopped via system tray")
 
-    def _on_restart(self, icon: pystray.Icon, item: Item):
+    def _on_restart(self, icon, item):
         self._on_stop(icon, item)
         self._on_start(icon, item)
         logger.info("Scanner restarted via system tray")
 
-    def _on_open_telegram(self, icon: pystray.Icon, item: Item):
+    def _on_open_telegram(self, icon, item):
         import webbrowser
         bot_username = self.config.telegram.bot_token.split(':')[0] if self.config.telegram.bot_token else "bot"
         webbrowser.open(f"https://t.me/{bot_username}")
         logger.info("Opened Telegram bot in browser")
 
-    def _on_view_status(self, icon: pystray.Icon, item: Item):
+    def _on_view_status(self, icon, item):
         try:
             positions = self.bridge.get_positions() if hasattr(self.bridge, 'get_positions') else []
             self._notify("Trading Status", f"Open Positions: {len(positions)}")
         except Exception as e:
             self._notify("Status Error", str(e))
 
-    def _on_exit(self, icon: pystray.Icon, item: Item):
+    def _on_exit(self, icon, item):
         self._running = False
         icon.stop()
         logger.info("Exiting via system tray")
@@ -96,6 +103,7 @@ class SystemTrayApp:
             logger.debug(f"Notification failed: {e}")
 
     def start(self):
+        pystray, _, _ = self._load_backend()
         self._running = True
         icon = pystray.Icon("vilona_ai", self._create_icon_image(), "Vilona AI v2", self._build_menu())
         self._icon = icon

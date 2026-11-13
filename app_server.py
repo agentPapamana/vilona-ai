@@ -10,11 +10,25 @@ from pathlib import Path
 from config import get_config
 from trading.bridge_ccxt import CCXTBridge
 from trading.bridge_mt5 import MT5Bridge
+from trading.bridge_mt5_mcp import MT5MCPBridge
 from ui.telegram_controller import TelegramController
 from ui.terminal_dashboard import TerminalDashboard
 from ui.system_tray import SystemTrayApp
+from core.quant_scanner import QuantScanner
 
 logger = logging.getLogger('vilona-ai')
+
+
+def create_trading_bridge(cfg):
+    """Create the configured trading bridge. connect() returns a plain bool."""
+    if cfg.exchange.name.lower() != "mt5":
+        return CCXTBridge(cfg.exchange)
+    if cfg.exchange.mt5_transport.lower() == "mcp":
+        return MT5MCPBridge(
+            mcp_url=cfg.exchange.mt5_mcp_url,
+            timeout=cfg.exchange.mt5_mcp_timeout,
+        )
+    return MT5Bridge()
 
 # Setup structured logging: RotatingFileHandler (10MB, 5 backups) + StreamHandler (console)
 log_dir = Path("logs")
@@ -55,10 +69,7 @@ def main():
     # 1. Initialize Trading Bridge
     bridge = None
     try:
-        if cfg.exchange.name.lower() == 'mt5':
-            bridge = MT5Bridge()
-        else:
-            bridge = CCXTBridge(cfg.exchange)
+        bridge = create_trading_bridge(cfg)
 
         if not bridge.connect():
             logger.error("Critical: Bridge connection failed")
@@ -98,6 +109,10 @@ def main():
     dash_thread = threading.Thread(target=run_dash, daemon=True)
     dash_thread.start()
 
+    # 3. Autonomous Quant Scanner & Trade Manager
+    scanner = QuantScanner(bridge, cfg, tg_controller, dashboard=dash)
+    scanner.start()
+
     try:
         # Wait on shutdown_event or KeyboardInterrupt/signals
         while not shutdown_event.is_set():
@@ -108,6 +123,12 @@ def main():
     finally:
         # Clean shutdown sequence
         logger.info("Initiating clean shutdown...")
+        if hasattr(scanner, 'stop'):
+            try:
+                scanner.stop()
+            except Exception as e:
+                logger.error(f"Error stopping scanner: {e}")
+
         if hasattr(dash, 'stop'):
             try:
                 dash.stop()

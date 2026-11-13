@@ -24,15 +24,22 @@ class TerminalDashboard:
         self.running = False
         self._last_update = 0
         self._logs: List[str] = []
-        
+        self._agents_logs: List[str] = []
+
     def add_log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._logs.append(f"[{timestamp}] {message}")
         if len(self._logs) > 50:
             self._logs.pop(0)
 
+    def add_agent_log(self, message: str):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._agents_logs.append(f"[{timestamp}] {message}")
+        if len(self._agents_logs) > 50:
+            self._agents_logs.pop(0)
+
     def _get_header(self) -> Panel:
-        mode = "LIVE" if not getattr(self.config.trading, 'paper_mode', True) else "PAPER"
+        mode = "LIVE" if not getattr(self.config, 'paper_trading', True) else "PAPER"
         exchange = self.config.exchange.name.upper()
         
         # Try to get current P/L if available
@@ -66,6 +73,20 @@ class TerminalDashboard:
             table.add_row(Text(log, style=style))
         return table
 
+    def _get_agents_table(self) -> Table:
+        table = Table(show_header=False, box=None, expand=True)
+        for log in self._agents_logs[-15:]:
+            upper = log.upper()
+            style = "white"
+            if "TRADER" in upper:
+                style = "green"
+            elif "RISK_MANAGER" in upper or "RISK" in upper:
+                style = "yellow"
+            elif "JUDGE" in upper:
+                style = "magenta"
+            table.add_row(Text(log, style=style))
+        return table
+
     def _get_footer(self) -> Panel:
         uptime = "Calculating..."
         # Simplified uptime
@@ -74,7 +95,7 @@ class TerminalDashboard:
         content = Text(
             f"Uptime: {int(time.time() - self._stats_start)}s | "
             f"Positions: {pos_count} | "
-            f"Mode: {'PAPER' if getattr(self.config.trading, 'paper_mode', True) else 'LIVE'}",
+            f"Mode: {'PAPER' if getattr(self.config, 'paper_trading', True) else 'LIVE'}",
             style="dim white"
         )
         return Panel(Align.center(content), border_style="dim")
@@ -87,6 +108,7 @@ class TerminalDashboard:
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="body", minimum_size=10),
+            Layout(name="agents", minimum_size=8),
             Layout(name="footer", size=3),
         )
 
@@ -94,6 +116,7 @@ class TerminalDashboard:
             while self.running:
                 layout["header"].update(self._get_header())
                 layout["body"].update(Panel(self._get_log_table(), title="Live Trading Feed", border_style="bright_blue"))
+                layout["agents"].update(Panel(self._get_agents_table(), title="Agent Activity (trader / risk_manager / judge)", border_style="magenta"))
                 layout["footer"].update(self._get_footer())
                 time.sleep(0.5)
 

@@ -30,7 +30,7 @@ class TelegramController:
             'positions': [],
             'logs': [],
             'last_scan': 0,
-            'paper_mode': getattr(self.config.trading, 'paper_mode', True),
+            'paper_mode': getattr(self.config, 'paper_trading', True),
             'scanner_active': False,
         }
 

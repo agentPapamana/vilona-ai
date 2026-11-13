@@ -30,6 +30,11 @@ class MarketSnapshot:
     spread_pct: float
     atr_15m: float
     news_headlines: list
+    # Broker-provided monetary values; when set, risk sizing uses these
+    # instead of the symbol-name heuristic.
+    tick_value: float = 0.0
+    tick_size: float = 0.0
+    contract_size: float = 0.0
 
 def roles_for(enabled: list[str]) -> tuple:
     if not enabled:

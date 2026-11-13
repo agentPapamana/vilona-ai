@@ -2,7 +2,7 @@
 
 **Version**: v2.1
 **Date**: 2026-11-08
-**Status**: Ready for Execution
+**Status**: Design specification; production readiness is tracked in `production-readiness-checklist.md`.
 
 ---
 

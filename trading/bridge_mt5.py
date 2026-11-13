@@ -5,7 +5,9 @@ Requires 'MetaTrader5' package and a running MT5 terminal.
 """
 from __future__ import annotations
 import time
+import calendar
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
@@ -66,6 +68,7 @@ class MT5Bridge:
     def __init__(self):
         self._connected = False
         self._symbol_info_cache: Dict[str, SymbolInfo] = {}
+        self._symbol_for_clock: str | None = None
 
     def connect(self, path=None) -> Tuple[bool, str]:
         """Initialize connection to running MT5 terminal."""
@@ -77,6 +80,11 @@ class MT5Bridge:
             return (False, f"MT5 Connect Fail: {code} {desc}")
 
         self._connected = True
+        try:
+            self._symbol_for_clock = str(os.getenv("KINGAI_MT5_CLOCK_SYMBOL", "XAUUSD"))
+            mt5.symbol_select(self._symbol_for_clock, True)
+        except Exception:
+            self._symbol_for_clock = None
         info = mt5.terminal_info()
         acc = mt5.account_info()
         acc_txt = f"Login: {acc.login} Server: {acc.server}" if acc else ''
@@ -327,6 +335,45 @@ class MT5Bridge:
             err = result.retcode if result else "Unknown"
             return False, f"Cancel failed: {err}"
         return True, "Order cancelled"
+
+    # --- Authoritative account history for entry lock ---
+    def get_history_deals(self, since_epoch: float):
+        if not self._connected or mt5 is None:
+            return None
+        try:
+            deals = mt5.history_deals_get(int(since_epoch), int(time.time()))
+            if deals is None:
+                return None
+            # Only closing deals count; include commissions/swap as returned by MT5.
+            return [
+                {"profit": float(d.profit), "commission": float(d.commission), "swap": float(d.swap)}
+                for d in deals
+                if d.entry == mt5.DEAL_ENTRY_OUT
+            ]
+        except Exception:
+            logger.exception("MT5 account deal history unavailable")
+            return None
+
+    def get_server_day_start(self, now_epoch: float):
+        """Use broker tick time and terminal's local timezone day boundary; fail closed."""
+        if not self._connected or mt5 is None or not self._symbol_for_clock:
+            return None
+        try:
+            tick = mt5.symbol_info_tick(self._symbol_for_clock)
+            broker_now = int(getattr(tick, "time", 0) or 0)
+            if broker_now <= 0 or abs(broker_now - now_epoch) > 86400:
+                return None
+            # MT5 history APIs accept epoch timestamps. Align the day boundary to
+            # broker tick UTC date; if the terminal offset cannot be validated, do not guess.
+            broker_utc = time.gmtime(broker_now)
+            host_utc = time.gmtime(now_epoch)
+            if (broker_utc.tm_year, broker_utc.tm_yday) != (host_utc.tm_year, host_utc.tm_yday):
+                return None
+            day_start_utc = int(calendar.timegm((broker_utc.tm_year, broker_utc.tm_mon, broker_utc.tm_mday, 0, 0, 0)))
+            return day_start_utc + int(broker_now - now_epoch)
+        except Exception:
+            logger.exception("MT5 broker day boundary unavailable")
+            return None
 
     # --- Daily P/L ---
     def calculate_daily_pl(self, symbol: str) -> Tuple[float, int, int]:

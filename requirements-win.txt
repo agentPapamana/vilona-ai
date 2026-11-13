@@ -1,0 +1,5 @@
+# Windows-only: native MT5 package (requires MT5 terminal installed locally)
+MetaTrader5
+pystray
+Pillow
+win10toast

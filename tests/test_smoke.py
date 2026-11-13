@@ -123,14 +123,14 @@ def test_risk_manager_rejects_wait():
 
 
 def test_risk_manager_approves_and_computes_lot():
-    signal = Signal(symbol="BTC/USDT", action="BUY", confidence=0.9, reason="strong trend up")
-    snapshot = make_snapshot(bid=100.0, ask=100.1)
+    signal = Signal(symbol="EURUSD", action="BUY", confidence=0.9, reason="strong trend up")
+    snapshot = make_snapshot(bid=1.12176, ask=1.12177)
     cfg = TradingConfig()
     verdict = risk_evaluate(signal, snapshot, equity_usd=10000.0, cfg=cfg, daily_pl_usd=0.0, open_positions_count=0)
     assert verdict.approved is True
     assert verdict.lot_size > 0
-    assert verdict.sl_price is not None and verdict.sl_price < 100.1
-    assert verdict.tp_price is not None and verdict.tp_price > 100.1
+    assert verdict.sl_price is not None and verdict.sl_price < 1.12177
+    assert verdict.tp_price is not None and verdict.tp_price > 1.12177
     assert verdict.rr_ratio > 0
 
 

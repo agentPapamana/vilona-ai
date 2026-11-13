@@ -28,4 +28,9 @@ Thumbs.db
 # Secrets & Local Config
 .env
 *.log
+
+# Runtime state / local databases
+*.db
+*.sqlite
+*.sqlite3
 logs/

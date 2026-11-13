@@ -282,10 +282,11 @@ def test_sl_is_normalised_to_symbol_digits():
 def test_min_stop_distance_resolved_per_symbol():
     from core.order_safety import resolve_min_stop_distance
 
-    # Live evidence: a 1.0 USD stop on XAUUSD was rejected by the EA with
-    # position_modify_failed, while 5.0 was accepted.
+    # Standard XAUUSD keeps the conservative 10.0 buffer; only the cent
+    # contract receives the empirically validated 5.0 buffer.
     assert resolve_min_stop_distance("XAUUSD") == pytest.approx(10.0)
-    assert resolve_min_stop_distance("XAUUSD.a") == pytest.approx(10.0)
+    assert resolve_min_stop_distance("XAUUSDc") == pytest.approx(5.0)
+    assert resolve_min_stop_distance("XAUUSDc.a") == pytest.approx(5.0)
     assert resolve_min_stop_distance("XAGUSD") == pytest.approx(0.5)
     # Unlisted forex pairs fall back to the flat default.
     assert resolve_min_stop_distance("EURUSD") == pytest.approx(0.0)

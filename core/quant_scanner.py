@@ -1303,6 +1303,9 @@ class QuantScanner:
             news_headlines=[],
             tick_value=float(getattr(symbol_info, "tick_value", 0.0) or 0.0),
             tick_size=float(getattr(symbol_info, "tick_size", 0.0) or 0.0),
+            lot_min=float(getattr(symbol_info, "lot_min", 0.0) or 0.0),
+            lot_step=float(getattr(symbol_info, "lot_step", 0.0) or 0.0),
+            lot_max=float(getattr(symbol_info, "lot_max", 0.0) or 0.0),
         )
 
         # Equity must come from the broker; a fabricated fallback would make

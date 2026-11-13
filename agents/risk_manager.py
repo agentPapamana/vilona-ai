@@ -103,12 +103,24 @@ def evaluate(
         return RiskVerdict(False, reason="zero SL distance")
 
     raw_lot = risk_usd / per_lot_risk
-    lot_step = getattr(cfg, "lot_step", 0.01) if contract_size > 1.0 else 0.0001
-    min_lot = getattr(cfg, "min_lot", 0.01) if contract_size > 1.0 else 0.0001
-    max_lot = getattr(cfg, "max_lot", 50.0) if contract_size > 1.0 else 1000.0
-
+    lot_step = float(getattr(snapshot, "lot_step", 0.0) or 0.0)
+    lot_min = float(getattr(snapshot, "lot_min", 0.0) or 0.0)
+    lot_max = float(getattr(snapshot, "lot_max", 0.0) or 0.0)
+    lot_step = lot_step or (getattr(cfg, "lot_step", 0.01) if contract_size > 1.0 else 0.0001)
+    lot_min = lot_min or (getattr(cfg, "min_lot", 0.01) if contract_size > 1.0 else 0.0001)
+    lot_max = lot_max or (getattr(cfg, "max_lot", 50.0) if contract_size > 1.0 else 1000.0)
+    configured_max_lot = getattr(cfg, "max_lot", lot_max) or lot_max
+    lot_max = min(lot_max, float(configured_max_lot))
     lot = round(round(raw_lot / lot_step) * lot_step, 4)
-    lot = max(min_lot, min(lot, max_lot))
+    lot = min(lot, lot_max)
+    minimum_volume_override = lot < lot_min
+    if minimum_volume_override and lot_min > lot_max:
+        return RiskVerdict(
+            False,
+            reason=f"broker minimum volume {lot_min:g} exceeds max lot {lot_max:g}",
+        )
+    if minimum_volume_override:
+        lot = lot_min
 
     # Hard safety caps. Both are expressed in notional terms so they are
     # independent of how tight the stop happens to be.
@@ -123,14 +135,12 @@ def evaluate(
         existing_notional += estimate_notional(p_symbol, p_volume, p_price)
     per_lot_notional = estimate_notional(snapshot.symbol, 1.0, entry)
 
-    if per_lot_notional > 0:
-        # Cap 1: one position may not consume most free margin.
+    if per_lot_notional > 0 and not minimum_volume_override:
+        # Apply conservative exposure caps when the risk-sized volume is valid.
         if free_margin is not None and free_margin > 0:
             margin_lot_cap = (free_margin * 0.10) / per_lot_notional
             lot = min(lot, margin_lot_cap)
             lot = round((lot // lot_step) * lot_step, 4)
-
-        # Cap 2: total notional may not exceed 2x equity.
         notional_budget = max(0.0, equity_usd * 2.0 - existing_notional)
         if notional_budget <= 0:
             return RiskVerdict(False, reason="notional exposure limit exceeded")
@@ -147,5 +157,6 @@ def evaluate(
         sl_price=round(sl_price, 8),
         tp_price=round(tp_price, 8),
         rr_ratio=round(rr, 2),
-        reason=f"approved conf={signal.confidence:.2f} lot={lot:.4f} rr={rr:.2f}",
+        reason=(f"approved conf={signal.confidence:.2f} lot={lot:.4f} rr={rr:.2f}"
+                + (" broker minimum volume override" if minimum_volume_override else "")),
     )

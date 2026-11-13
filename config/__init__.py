@@ -78,13 +78,12 @@ class TradingConfig:
     max_lot: float = 50.0
     min_lot: float = 0.01
     lot_step: float = 0.01
-    # Broker reports SYMBOL_TRADE_STOPS_LEVEL=0 for this demo, but zero does
-    # not guarantee no dynamic server-side restrictions. A 1.0 USD XAUUSD stop
-    # was rejected by the EA while 5.0 was accepted, so keep the empirically
-    # validated 10.0 USD safety buffer until tested otherwise without live risk.
+    # Keep standard XAUUSD at its 10.0 safety buffer. The broker's cent
+    # contract XAUUSDc accepted 5.0 in live validation; keep that rule scoped
+    # to the cent symbol instead of weakening the standard symbol.
     min_stop_distance: float = 0.0
     min_stop_distance_by_symbol: Dict[str, float] = field(
-        default_factory=lambda: {"XAUUSD": 10.0, "GOLD": 10.0, "XAGUSD": 0.5}
+        default_factory=lambda: {"XAUUSDc": 5.0, "XAUUSD": 10.0, "GOLD": 10.0, "XAGUSD": 0.5}
     )
     max_spread_pct: float = 0.1
     symbol_cooldown_seconds: int = 300

@@ -35,6 +35,9 @@ class MarketSnapshot:
     tick_value: float = 0.0
     tick_size: float = 0.0
     contract_size: float = 0.0
+    lot_min: float = 0.0
+    lot_step: float = 0.0
+    lot_max: float = 0.0
 
 def roles_for(enabled: list[str]) -> tuple:
     if not enabled:

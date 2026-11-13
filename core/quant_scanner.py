@@ -730,6 +730,37 @@ class QuantScanner:
                 digits = _symbol_digits(info)
                 dec = digits if digits is not None else 5
 
+                # Hard loss guard is deterministic and never waits for LLM availability.
+                open_px_val = float(pos.price_open or 0.0)
+                cur_px_val = float(pos.price_current or 0.0)
+                is_buy_val = pos.type == 0 or str(pos.type).lower() == "buy"
+                loss_val = (cur_px_val - open_px_val) if is_buy_val else (open_px_val - cur_px_val)
+                loss_limit = float(getattr(self.cfg.trading, "emergency_loss_atr_mult", 2.0)) * atr
+                owned = MAGIC_BASE <= int(getattr(pos, "magic", 0) or 0) < MAGIC_BASE + 1000
+                if owned and loss_limit > 0 and loss_val <= -loss_limit:
+                    message = f"LOSS GUARD {pos.symbol} ticket={pos.ticket}: loss {abs(loss_val):.6g} >= {loss_limit:.6g}"
+                    self._feed(message)
+                    logger.error(message)
+                    if not paper_mode and bool(getattr(self.cfg.trading, "emergency_close_on_loss", True)):
+                        try:
+                            result = owner.close_position(pos.ticket, pos.symbol, comment="emergency loss guard")
+                            ok, msg = _trade_result(result)
+                            self._record_position_decision(
+                                ticket=pos.ticket, symbol=pos.symbol, action="CLOSE",
+                                old_sl=pos.sl, old_tp=pos.tp, requested_sl=None, requested_tp=None,
+                                result="SUCCESS" if ok else "FAILED", latency_ms=0,
+                                error=None if ok else msg,
+                            )
+                            if ok:
+                                self._verify_position_action(pos, "CLOSE", None, None)
+                            else:
+                                self._feed(f"LOSS GUARD CLOSE FAILED ticket={pos.ticket}: {msg}")
+                        except Exception as exc:
+                            self._feed(f"LOSS GUARD CLOSE FAILED ticket={pos.ticket}: {exc}")
+                            logger.exception("Loss guard close failed for ticket=%s", pos.ticket)
+                    continue
+ 
+
                 now_ts = time.time()
                 last_rev = self._last_position_review.get(pos.ticket, 0.0)
                 can_review_llm = (now_ts - last_rev) >= 60.0

@@ -98,6 +98,10 @@ class TradingConfig:
     be_offset_atr_mult: float = 0.5
     trailing_atr_mult: float = 2.0
     trailing_step_atr_mult: float = 0.5
+    # Deterministic position protection runs independently of the LLM manager.
+    emergency_loss_atr_mult: float = 2.0
+    emergency_stop_atr_mult: float = 1.5
+    emergency_close_on_loss: bool = True
 
     max_drift_points: int = 100
     max_drift_candles: int = 12

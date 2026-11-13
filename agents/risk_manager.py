@@ -75,7 +75,9 @@ def evaluate(
         return RiskVerdict(False, reason="daily loss limit hit")
     entry = signal.entry_hint or (snapshot.tick_ask if signal.action == "BUY" else snapshot.tick_bid)
     atr = snapshot.atr_15m or (entry * 0.005)
-    sl_dist = cfg.sl_atr_mult * atr
+    from core.order_safety import resolve_min_stop_distance
+    broker_min_stop = resolve_min_stop_distance(snapshot.symbol)
+    sl_dist = max(cfg.sl_atr_mult * atr, broker_min_stop)
     tp_dist = cfg.tp_atr_mult * atr
     if signal.action == "BUY":
         sl_price = entry - sl_dist
@@ -84,15 +86,10 @@ def evaluate(
         sl_price = entry + sl_dist
         tp_price = entry - tp_dist
     risk_usd = equity_usd * (cfg.max_risk_per_trade_pct / 100.0)
-    per_unit_risk = abs(entry - sl_price)
+    per_unit_risk = sl_dist
     if per_unit_risk <= 0:
         return RiskVerdict(False, reason="zero SL distance")
-
     contract_size = getattr(snapshot, "contract_size", None) or get_contract_size(snapshot.symbol)
-
-    # Preferred path: use the broker's own monetary values from symbol info.
-    # tick_value = account-currency value of one tick_size move per 1.0 lot.
-    # This is authoritative and handles JPY crosses, metals, and indices correctly.
     tick_value = getattr(snapshot, "tick_value", 0.0) or 0.0
     tick_size = getattr(snapshot, "tick_size", 0.0) or 0.0
     if tick_value > 0 and tick_size > 0:

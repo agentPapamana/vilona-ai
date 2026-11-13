@@ -1398,7 +1398,18 @@ class QuantScanner:
             free_margin=free_margin,
             open_positions=all_positions,
         )
-
+        from core.order_safety import resolve_min_stop_distance
+        min_stop_distance = resolve_min_stop_distance(symbol, self.cfg.trading)
+        entry_price = float(signal.entry_hint or (tick.ask if action == "BUY" else tick.bid))
+        actual_stop_distance = abs(entry_price - float(verdict.sl_price or 0.0))
+        if min_stop_distance > 0 and actual_stop_distance < min_stop_distance:
+            message = (
+                f"broker minimum stop distance {min_stop_distance:.5f} exceeds "
+                f"strategy SL {actual_stop_distance:.5f}"
+            )
+            self._feed(f"RISK REJECT {symbol}: {message}")
+            self._agent_feed("risk_manager", symbol, f"REJECT — {message}")
+            return
         if not verdict.approved:
             self._feed(f"RISK REJECT {symbol}: {verdict.reason}")
             self._agent_feed("risk_manager", symbol, f"REJECT — {verdict.reason}")

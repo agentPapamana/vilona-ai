@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Run Vilona AI app_server.py against the live MT5 demo bridge.
-# MCP server (Fedora :8765) -> Mac agent (:8787) -> MQL5 EA -> MT5 terminal.
+# Run Vilona AI app_server.py against the venue selected in .env.
+# KINGAI_EXCHANGE chooses the bridge: mt5 (MCP server -> Mac agent -> MQL5 EA)
+# or a CCXT venue such as bybit (public market data needs no credentials).
 set -euo pipefail
 
 cd /mnt/hermes-workspace/Apps/vilona-ai
@@ -11,7 +12,7 @@ set -a
 . ./.env
 set +a
 
-export KINGAI_EXCHANGE=mt5
+export KINGAI_EXCHANGE="${KINGAI_EXCHANGE:-mt5}"
 export KINGAI_MT5_TRANSPORT=mcp
 export KINGAI_MT5_MCP_URL=http://127.0.0.1:8765
 export KINGAI_HEADLESS=true
@@ -27,7 +28,7 @@ else
     echo "[vilona] MODE: PAPER (KINGAI_PAPER_TRADING=${KINGAI_PAPER_TRADING})"
 fi
 echo "[vilona] account=${KINGAI_MT5_ACCOUNT:-unset} bridge=${KINGAI_MT5_MCP_URL} transport=${KINGAI_MT5_TRANSPORT}"
-echo "[vilona] exchange=mt5 transport=mcp mcp=${KINGAI_MT5_MCP_URL} symbols=${KINGAI_SYMBOLS}"
+echo "[vilona] exchange=${KINGAI_EXCHANGE} type=${KINGAI_EXCHANGE_TYPE:-default} symbols=${KINGAI_SYMBOLS}"
 
 # Single-instance guard. Two app_server processes share one SQLite file and one
 # MT5 bridge: they duplicate scan work, fight over the DB write lock, and can
@@ -47,5 +48,11 @@ if ! flock -n 9; then
 fi
 printf '%s\n' "$$" > "${PID_FILE}" 2>/dev/null || true
 echo "[vilona] single-instance lock acquired: ${LOCK_FILE} (pid $$)"
+# The rich dashboard is an alternate screen: it only paints on a TTY. A
+# supervisor that captures stdout (pipe/journal) swallows it silently, which
+# looks like a hang after this line. Progress still lands in logs/vilona.log.
+if [ ! -t 1 ]; then
+    echo "[vilona] stdout is not a TTY: dashboard rendering disabled, follow logs/vilona.log"
+fi
 
 exec /mnt/hermes-workspace/Apps/vilona-ai/.venv/bin/python -u app_server.py

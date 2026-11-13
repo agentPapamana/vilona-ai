@@ -361,6 +361,27 @@ class QuantScanner:
         # ticket -> epoch seconds of the last LLM position review, for rate limiting
         self._last_position_review: Dict[int, float] = {}
 
+    def _is_forex_venue(self) -> bool:
+        """True when the connected backend trades a weekday-only market.
+
+        MT5 is a forex/metals venue with a weekly close, so the weekend entry
+        and flatten windows apply. CCXT venues (Binance, Bybit, ...) trade
+        crypto around the clock and must never be locked out on a weekend.
+        """
+        if "mt5" in type(self.bridge).__name__.lower():
+            return True
+        exchange = getattr(self.cfg, "exchange", None)
+        return str(getattr(exchange, "name", "")).lower() == "mt5"
+
+    def _is_forex_symbol(self, symbol: str) -> bool:
+        bridge_for = getattr(self.bridge, "bridge_for", None)
+        if bridge_for is not None:
+            try:
+                return "mt5" in type(bridge_for(symbol)).__name__.lower()
+            except (KeyError, TypeError):
+                return False
+        return self._is_forex_venue()
+
     def _record_position_decision(self, **decision):
         """Persist a position-manager decision; DB failure must not stop trading."""
         if self.db is None or not hasattr(self.db, "save_position_decision"):
@@ -520,6 +541,16 @@ class QuantScanner:
                 "opened_at": getattr(pos, "time", None),
             }
 
+    def _publish_market_data(self, symbol: str, tick: Any, candles: dict) -> None:
+        """Expose the exact quotes the scanner consumed on the dashboard."""
+        if self.dashboard is not None and hasattr(self.dashboard, "update_market"):
+            try:
+                self.dashboard.update_market(symbol, tick, candles, self.bridge.get_symbol_info(symbol))
+            except TypeError:
+                self.dashboard.update_market(symbol, tick, candles)
+            except Exception:
+                logger.debug("dashboard market feed failed", exc_info=True)
+
     def _feed(self, message: str):
         """Push a line to the terminal dashboard feed, if one is attached."""
         if self.dashboard is not None and hasattr(self.dashboard, "add_log"):
@@ -606,25 +637,32 @@ class QuantScanner:
 
     def scan_cycle(self):
         symbols = getattr(self.cfg.trading, "symbols", None) or ["EURUSD"]
-        self._feed(f"SCAN forex: {', '.join(symbols)}")
+        symbols = [self._resolve_symbol(symbol) for symbol in symbols]
+        self._feed(f"SCAN SYMBOL: {', '.join(symbols)}")
 
         self.persist_closed_trades()
-        self.check_bridge_heartbeat()
         self._snapshot_open_positions()
-        # 1. Manage existing open positions (Break-Even & Risk Guard)
+        # Manage existing positions before checking the heartbeat. The first
+        # cycle must observe a tick before it can report the bridge as healthy.
         self.manage_open_positions()
-        # 2. Scan each target symbol for new high-probability setups
         for symbol in symbols:
             try:
                 self.evaluate_symbol(symbol)
             except Exception as e:
                 self._feed(f"ERROR {symbol}: {e}")
                 logger.error(f"Failed scanning {symbol}: {e}")
+        self.check_bridge_heartbeat()
+
+    def _resolve_symbol(self, symbol: str) -> str:
+        """Resolve a user-friendly symbol to the loaded CCXT contract symbol."""
+        resolver = getattr(self.bridge, "resolve_symbol", None)
+        return resolver(symbol) if resolver else symbol
 
     def manage_open_positions(self):
         """Manage open positions with optional LLM decisions and deterministic BE fallback."""
         try:
-            positions = self.bridge.get_positions() or []
+            positions = [] if bool(getattr(self.cfg, "paper_trading", False)) else (self.bridge.get_positions() or [])
+            _owner = getattr(self.bridge, "bridge_for", None)
             llm_cfg = getattr(self.cfg, "llm", None)
             manager_enabled = bool(getattr(llm_cfg, "enabled", False))
             from core.order_safety import MAGIC_BASE
@@ -633,10 +671,13 @@ class QuantScanner:
             for pos in positions:
                 if not pos or not pos.symbol:
                     continue
-                # Weekend flatten applies only to Vilona-owned positions. In
-                # PAPER it records intent and never calls the bridge.
-                if MAGIC_BASE <= int(getattr(pos, "magic", 0) or 0) < MAGIC_BASE + 1000:
-                    flatten_tick = self.bridge.get_tick(pos.symbol)
+                # Weekend flatten applies only to Vilona-owned forex positions.
+                # Crypto venues trade through the weekend, so nothing is
+                # flattened there. In PAPER it records intent only.
+                if (self._is_forex_symbol(pos.symbol)
+                        and MAGIC_BASE <= int(getattr(pos, "magic", 0) or 0) < MAGIC_BASE + 1000):
+                    owner = _owner(pos.symbol) if _owner else self.bridge
+                    flatten_tick = owner.get_tick(pos.symbol)
                     flatten_epoch = (float(getattr(flatten_tick, "timestamp_ms", 0) or 0) / 1000.0
                                      if flatten_tick is not None else 0.0)
                     if is_weekend_flatten_window(server_epoch_s=flatten_epoch, flatten_min=flatten_min):
@@ -645,7 +686,8 @@ class QuantScanner:
                         if paper_mode:
                             continue
                         try:
-                            result = self.bridge.close_position(pos.ticket, pos.symbol, comment="weekend flatten", magic=MAGIC_BASE)
+                            owner = _owner(pos.symbol) if _owner else self.bridge
+                            result = owner.close_position(pos.ticket, pos.symbol, comment="weekend flatten", magic=MAGIC_BASE)
                             ok, msg = _trade_result(result)
                             if ok:
                                 self._verify_position_action(pos, "CLOSE", None, None)
@@ -655,12 +697,13 @@ class QuantScanner:
                             self._feed(f"WEEKEND FLATTEN FAILED ticket={pos.ticket}: {exc}")
                             logger.exception("Weekend flatten failed for ticket=%s", pos.ticket)
                         continue
-                candles = self.bridge.get_candles(pos.symbol, "15m", limit=30)
+                owner = _owner(pos.symbol) if _owner else self.bridge
+                candles = owner.get_candles(pos.symbol, "15m", limit=30)
                 atr = compute_atr(candles, 14)
                 if atr <= 0:
                     continue
 
-                info = self.bridge.get_symbol_info(pos.symbol) if hasattr(self.bridge, "get_symbol_info") else None
+                info = owner.get_symbol_info(pos.symbol) if hasattr(owner, "get_symbol_info") else None
                 digits = _symbol_digits(info)
                 dec = digits if digits is not None else 5
 
@@ -688,7 +731,7 @@ class QuantScanner:
                     if MAGIC_BASE <= int(getattr(pos, "magic", 0) or 0) < MAGIC_BASE + 1000:
                         self._last_position_review[pos.ticket] = now_ts
                         try:
-                            tick = self.bridge.get_tick(pos.symbol)
+                            tick = owner.get_tick(pos.symbol)
                             if tick is not None:
                                 snapshot = MarketSnapshot(
                                     symbol=pos.symbol, tick_bid=tick.bid, tick_ask=tick.ask,
@@ -715,7 +758,7 @@ class QuantScanner:
                             if action == "CLOSE":
                                 started = time.time()
                                 try:
-                                    result = self.bridge.close_position(pos.ticket, pos.symbol)
+                                    result = owner.close_position(pos.ticket, pos.symbol)
                                 except Exception as exc:
                                     self._record_position_decision(
                                         ticket=pos.ticket, symbol=pos.symbol, action="CLOSE",
@@ -777,7 +820,7 @@ class QuantScanner:
                                 if new_sl != current_sl or new_tp != current_tp:
                                     started = time.time()
                                     try:
-                                        result = self.bridge.modify_position_sltp(pos.ticket, pos.symbol, sl=new_sl, tp=new_tp)
+                                        result = owner.modify_position_sltp(pos.ticket, pos.symbol, sl=new_sl, tp=new_tp)
                                     except Exception as exc:
                                         self._record_position_decision(
                                             ticket=pos.ticket, symbol=pos.symbol, action="MODIFY",
@@ -824,11 +867,11 @@ class QuantScanner:
                     min_stop = resolve_min_stop_distance(pos.symbol, getattr(self.cfg, "trading", None))
                     if min_stop > 0 and abs(cur_px - new_sl) < min_stop:
                         new_sl = None  # broker would reject a stop this close to price
-                if new_sl is None or not hasattr(self.bridge, "modify_position_sltp"):
+                if new_sl is None or not hasattr(owner, "modify_position_sltp"):
                     continue
                 started = time.time()
                 try:
-                    result = self.bridge.modify_position_sltp(pos.ticket, pos.symbol, sl=new_sl, tp=pos.tp)
+                    result = owner.modify_position_sltp(pos.ticket, pos.symbol, sl=new_sl, tp=pos.tp)
                 except Exception as exc:
                     self._record_position_decision(
                         ticket=pos.ticket, symbol=pos.symbol, action="MODIFY",
@@ -887,7 +930,11 @@ class QuantScanner:
         # Global capacity check: count the whole book, not just this symbol.
         # Counting per symbol let 4 symbols each hold max_concurrent_positions,
         # which is how 13 positions accumulated against a cap of 5.
-        all_positions = self.bridge.get_positions() or []
+        # PAPER never reads the broker book: without credentials there is no
+        # private endpoint, and the simulated order is latched locally anyway.
+        paper_mode = bool(getattr(self.cfg, "paper_trading", False))
+        route = self.bridge.bridge_for(symbol) if hasattr(self.bridge, "bridge_for") else self.bridge
+        all_positions = [] if paper_mode else (route.get_positions() if hasattr(route, "get_positions") else [])
         if len(all_positions) >= self.cfg.trading.max_concurrent_positions:
             self._feed(
                 f"{symbol}: skipped — {len(all_positions)} open positions "
@@ -934,7 +981,7 @@ class QuantScanner:
                         logger.exception("Failed to alert rejection block for %s", symbol)
                 return
 
-        tick = self.bridge.get_tick(symbol)
+        tick = route.get_tick(symbol)
         if not tick or tick.bid <= 0 or tick.ask <= 0:
             self._feed(f"{symbol}: no tick")
             return
@@ -961,21 +1008,25 @@ class QuantScanner:
 
         # Weekend guard uses broker tick time, never the host clock: the host may
         # sit in a different timezone and would otherwise allow Friday pre-close entries.
-        weekend = evaluate_weekend_guard(
-            server_epoch_s=tick_epoch_s,
-            entry_cutoff_min=int(getattr(self.cfg.trading, "weekend_entry_cutoff_min", 120)),
-            open_grace_min=int(getattr(self.cfg.trading, "week_open_grace_min", 30)),
-        )
-        if not weekend.allowed:
-            self._feed(f"ENTRY LOCK {symbol}: {weekend.reason}")
-            logger.warning("Weekend guard blocked %s: %s", symbol, weekend.reason)
-            return
+        # Crypto venues (CCXT: Binance, Bybit, ...) never close, so the forex
+        # entry and flatten windows do not apply to them.
+        if self._is_forex_symbol(symbol):
+            weekend = evaluate_weekend_guard(
+                server_epoch_s=tick_epoch_s,
+                entry_cutoff_min=int(getattr(self.cfg.trading, "weekend_entry_cutoff_min", 120)),
+                open_grace_min=int(getattr(self.cfg.trading, "week_open_grace_min", 30)),
+            )
+            if not weekend.allowed:
+                self._feed(f"ENTRY LOCK {symbol}: {weekend.reason}")
+                logger.warning("Weekend guard blocked %s: %s", symbol, weekend.reason)
+                return
 
+        candle_time = 0
         strategy = getattr(self.cfg.trading, "strategy", "pullback")
         if strategy == "scalp_5m":
-            c15m = self.bridge.get_candles(symbol, "15m", limit=60)
-            c5m = self.bridge.get_candles(symbol, "5m", limit=60)
-            c1h = self.bridge.get_candles(symbol, "1h", limit=60)
+            c15m = route.get_candles(symbol, "15m", limit=60)
+            c5m = route.get_candles(symbol, "5m", limit=60)
+            c1h = route.get_candles(symbol, "1h", limit=60)
             if len(c15m) < 50 or len(c5m) < 20:
                 self._feed(f"{symbol}: insufficient scalp candles (15m={len(c15m)}, 5m={len(c5m)})")
                 return
@@ -983,10 +1034,13 @@ class QuantScanner:
             action, confidence, reason, atr_signal = compute_scalp_5m_signal(
                 c15m, c5m, float(tick.bid), band_mult, c1h=c1h
             )
-            candle_time = c5m[-1].get("time") if c5m else 0
+            candle_time = c15m[-1].get("time") if c15m else 0
+            self._publish_market_data(
+                symbol, tick, {"5m": c5m[-1], "15m": c15m[-1], "1h": c1h[-1] if c1h else {}}
+            )
         elif strategy == "breakout":
-            c15m = self.bridge.get_candles(symbol, "15m", limit=60)
-            c1h = self.bridge.get_candles(symbol, "1h", limit=80)
+            c15m = route.get_candles(symbol, "15m", limit=60)
+            c1h = route.get_candles(symbol, "1h", limit=80)
             if len(c1h) < 50 or len(c15m) < 21:
                 self._feed(f"{symbol}: insufficient breakout candles (15m={len(c15m)}, 1h={len(c1h)})")
                 return
@@ -994,9 +1048,12 @@ class QuantScanner:
                 c15m, c1h, float(tick.bid), int(getattr(self.cfg.trading, "breakout_lookback", 20))
             )
             candle_time = c15m[-1].get("time") if c15m else 0
+            self._publish_market_data(
+                symbol, tick, {"5m": c15m[-1], "15m": c15m[-1], "1h": c1h[-1]}
+            )
         else:
-            c15m = self.bridge.get_candles(symbol, "15m", limit=60)
-            c1h = self.bridge.get_candles(symbol, "1h", limit=80)
+            c15m = route.get_candles(symbol, "15m", limit=60)
+            c1h = route.get_candles(symbol, "1h", limit=80)
             if len(c1h) < 50 or len(c15m) < 20:
                 self._feed(f"{symbol}: insufficient candles (15m={len(c15m)}, 1h={len(c1h)})")
                 return
@@ -1044,6 +1101,9 @@ class QuantScanner:
                         f"gradient {(ema50 - ema21) / atr_15m:.2f} ATR"
                     )
             candle_time = c15m[-1].get("time") if c15m else 0
+            self._publish_market_data(
+                symbol, tick, {"5m": c15m[-1], "15m": c15m[-1], "1h": c1h[-1]}
+            )
 
         if action == "WAIT":
             self._feed(f"{symbol}: no signal")
@@ -1079,8 +1139,8 @@ class QuantScanner:
         )
 
         symbol_info = None
-        if hasattr(self.bridge, "get_symbol_info"):
-            symbol_info = self.bridge.get_symbol_info(symbol)
+        if hasattr(route, "get_symbol_info"):
+            symbol_info = route.get_symbol_info(symbol)
 
         snapshot = MarketSnapshot(
             symbol=symbol,
@@ -1099,8 +1159,9 @@ class QuantScanner:
         # percentage loss limits appear valid when account data is unavailable.
         equity = None
         free_margin = None
-        if hasattr(self.bridge, "get_account_info"):
-            acc = self.bridge.get_account_info()
+        route = self.bridge.bridge_for(symbol) if hasattr(self.bridge, "bridge_for") else self.bridge
+        if hasattr(route, "get_account_info"):
+            acc = route.get_account_info()
             if acc:
                 broker_equity = getattr(acc, "equity", None)
                 if broker_equity is not None:
@@ -1111,7 +1172,7 @@ class QuantScanner:
         # Fail closed before risk/judge/order when operator stop or authoritative
         # broker-day realized P/L is missing/over limit. This affects entries only.
         kill_switch = self._kill_switch.is_active()
-        guard_daily_pl_usd = daily_pl_from_bridge_day(self.bridge, now_epoch=time.time()) if not kill_switch else None
+        guard_daily_pl_usd = daily_pl_from_bridge_day(route, now_epoch=time.time()) if not kill_switch else None
         guard = evaluate_entry_lock(
             kill_switch=kill_switch,
             daily_pl_usd=guard_daily_pl_usd,
@@ -1166,8 +1227,8 @@ class QuantScanner:
 
         # All open positions, not just this symbol's, so exposure caps see the whole book.
         all_positions = []
-        if hasattr(self.bridge, "get_positions"):
-            all_positions = self.bridge.get_positions() or []
+        if hasattr(route, "get_positions"):
+            all_positions = route.get_positions() or []
 
         # Risk Manager Evaluation
         verdict = risk_evaluate(
@@ -1379,7 +1440,7 @@ class QuantScanner:
                 return
 
         protected = place_protected_order(
-            self.bridge,
+            route,
             symbol=symbol,
             action=action.lower(),
             volume=verdict.lot_size,

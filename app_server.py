@@ -14,21 +14,32 @@ from trading.bridge_mt5_mcp import MT5MCPBridge
 from ui.telegram_controller import TelegramController
 from ui.terminal_dashboard import TerminalDashboard
 from ui.system_tray import SystemTrayApp
-from core.quant_scanner import QuantScanner
+from trading.multi_bridge import MultiMarketBridge
 
 logger = logging.getLogger('vilona-ai')
 
 
 def create_trading_bridge(cfg):
-    """Create the configured trading bridge. connect() returns a plain bool."""
-    if cfg.exchange.name.lower() != "mt5":
-        return CCXTBridge(cfg.exchange)
-    if cfg.exchange.mt5_transport.lower() == "mcp":
-        return MT5MCPBridge(
-            mcp_url=cfg.exchange.mt5_mcp_url,
-            timeout=cfg.exchange.mt5_mcp_timeout,
-        )
-    return MT5Bridge()
+    """Create one bridge or route symbols across CCXT and MT5."""
+    symbols = list(getattr(cfg.trading, "symbols", []) or [])
+    mixed = bool(getattr(cfg, "multi_market", False)) or (
+        any("/" in symbol or ":" in symbol for symbol in symbols)
+        and any("/" not in symbol and ":" not in symbol for symbol in symbols)
+    )
+    if not mixed:
+        if cfg.exchange.name.lower() != "mt5":
+            return CCXTBridge(cfg.exchange)
+        if cfg.exchange.mt5_transport.lower() == "mcp":
+            return MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout)
+        return MT5Bridge()
+
+    ccxt_bridge = CCXTBridge(cfg.exchange)
+    mt5_bridge = (
+        MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout)
+        if cfg.exchange.mt5_transport.lower() == "mcp" else MT5Bridge()
+    )
+    routes = {symbol: (ccxt_bridge if ("/" in symbol or ":" in symbol) else mt5_bridge) for symbol in symbols}
+    return MultiMarketBridge(routes)
 
 # Setup structured logging: RotatingFileHandler (10MB, 5 backups) + StreamHandler (console)
 log_dir = Path("logs")

@@ -176,9 +176,11 @@ def place_protected_order(
     tolerance = (10.0 ** -int(digits)) if digits is not None else 1e-5
 
     def _protected_as_requested() -> bool:
-        for p in bridge.get_positions(symbol) or []:
-            if p.ticket != ticket:
-                continue
+        positions = bridge.get_positions(symbol) or []
+        matched = [p for p in positions if p.ticket == ticket]
+        if not matched and len(positions) == 1:
+            matched = positions
+        for p in matched:
             broker_sl = float(getattr(p, "sl", 0.0) or 0.0)
             return broker_sl > 0 and abs(broker_sl - sl_value) <= tolerance * 1.5
         return False
@@ -197,12 +199,13 @@ def place_protected_order(
             sl_verified=True,
         )
 
-    # Missing or wrong stop on the position: attach the requested one, verify again.
     modify = bridge.modify_position_sltp(
         ticket=ticket, symbol=symbol, sl=sl_value, tp=tp_value
     )
+    modify_ok = bool(modify and (modify[0] if isinstance(modify, tuple) else getattr(modify, "success", False)))
+    modify_message = modify[1] if isinstance(modify, tuple) else getattr(modify, "message", "unknown")
 
-    if modify and modify.success and _protected_as_requested():
+    if modify_ok and _protected_as_requested():
         return ProtectedOrderResult(
             success=True,
             message="order placed and protected",
@@ -213,13 +216,14 @@ def place_protected_order(
     # The EA refused to protect the position. Leaving it open means unbounded
     # risk, so close it and report the failure instead of pretending it worked.
     close = bridge.close_position(ticket=ticket, symbol=symbol, volume=volume)
-    closed = bool(close and close.success)
+    closed = bool(close and (close[0] if isinstance(close, tuple) else getattr(close, "success", False)))
+    close_message = close[1] if isinstance(close, tuple) else getattr(close, "message", "unknown")
     return ProtectedOrderResult(
         success=False,
         message=(
             "SL could not be verified "
-            f"({getattr(modify, 'message', 'unknown')}); "
-            + ("position closed" if closed else "POSITION MAY STILL BE OPEN")
+            f"({modify_message}); "
+            + ("position closed" if closed else f"POSITION MAY STILL BE OPEN ({close_message})")
         ),
         ticket=ticket,
         sl_verified=False,

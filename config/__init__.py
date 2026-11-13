@@ -17,13 +17,15 @@ MAX_POSITIONS_PER_SYMBOL_LIMIT = 100
 
 @dataclass
 class ExchangeConfig:
-    """Exchange connection configuration"""
+    """Exchange connection configuration."""
     name: str = "binance"
     api_key: str = ""
     api_secret: str = ""
     password: str = ""
     sandbox: bool = False
     rate_limit: int = 1200
+    # CCXT market type: spot for balances or swap for linear perpetual positions.
+    market_type: str = "spot"
     # MT5 transport: "package" = local MetaTrader5 Python package (Windows only)
     #                "mcp"     = external MT5 MCP server (works on any OS)
     mt5_transport: str = "mcp"
@@ -159,6 +161,12 @@ class Config:
         config.exchange.api_secret = os.getenv("KINGAI_EXCHANGE_API_SECRET", config.exchange.api_secret)
         config.exchange.password = os.getenv("KINGAI_EXCHANGE_PASSWORD", config.exchange.password)
         config.exchange.sandbox = os.getenv("KINGAI_EXCHANGE_SANDBOX", "false").lower() == "true"
+        market_type = os.getenv("KINGAI_EXCHANGE_TYPE", config.exchange.market_type).strip().lower()
+        if market_type == "futures":
+            market_type = "future"
+        if market_type not in {"spot", "swap", "future"}:
+            raise ValueError("KINGAI_EXCHANGE_TYPE must be one of 'spot', 'swap', or 'future'")
+        config.exchange.market_type = market_type
         config.exchange.mt5_transport = os.getenv("KINGAI_MT5_TRANSPORT", config.exchange.mt5_transport)
         config.exchange.mt5_mcp_url = os.getenv("KINGAI_MT5_MCP_URL", config.exchange.mt5_mcp_url)
         config.exchange.mt5_mcp_timeout = int(

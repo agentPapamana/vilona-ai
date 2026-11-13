@@ -106,9 +106,11 @@ def evaluate(
     lot_step = float(getattr(snapshot, "lot_step", 0.0) or 0.0)
     lot_min = float(getattr(snapshot, "lot_min", 0.0) or 0.0)
     lot_max = float(getattr(snapshot, "lot_max", 0.0) or 0.0)
-    lot_step = lot_step or (getattr(cfg, "lot_step", 0.01) if contract_size > 1.0 else 0.0001)
-    lot_min = lot_min or (getattr(cfg, "min_lot", 0.01) if contract_size > 1.0 else 0.0001)
-    lot_max = lot_max or (getattr(cfg, "max_lot", 50.0) if contract_size > 1.0 else 1000.0)
+    # Bridge responses can omit volume fields; fall back to broker-compatible
+    # defaults instead of sizing to zero and rejecting a valid signal.
+    lot_step = lot_step or float(getattr(cfg, "lot_step", 0.01) or 0.01)
+    lot_min = lot_min or float(getattr(cfg, "min_lot", 0.01) or 0.01)
+    lot_max = lot_max or float(getattr(cfg, "max_lot", 50.0) or 50.0)
     configured_max_lot = getattr(cfg, "max_lot", lot_max) or lot_max
     lot_max = min(lot_max, float(configured_max_lot))
     lot = round(round(raw_lot / lot_step) * lot_step, 4)
@@ -135,18 +137,28 @@ def evaluate(
         existing_notional += estimate_notional(p_symbol, p_volume, p_price)
     per_lot_notional = estimate_notional(snapshot.symbol, 1.0, entry)
 
-    if per_lot_notional > 0 and not minimum_volume_override:
-        # Apply conservative exposure caps when the risk-sized volume is valid.
+    if per_lot_notional > 0:
+        # Hard exposure caps always win, including when broker minimum volume
+        # is required. A minimum lot may bypass only rounding, never exposure.
         if free_margin is not None and free_margin > 0:
             margin_lot_cap = (free_margin * 0.10) / per_lot_notional
+            if margin_lot_cap < lot_min:
+                return RiskVerdict(False, reason="notional exposure limit exceeded")
             lot = min(lot, margin_lot_cap)
             lot = round((lot // lot_step) * lot_step, 4)
         notional_budget = max(0.0, equity_usd * 2.0 - existing_notional)
         if notional_budget <= 0:
             return RiskVerdict(False, reason="notional exposure limit exceeded")
+        if notional_budget / per_lot_notional < lot_min:
+            return RiskVerdict(False, reason="notional exposure limit exceeded")
         lot = min(lot, notional_budget / per_lot_notional)
-        lot = round((lot // lot_step) * lot_step, 4)
-
+    # exposure cap reduced the calculated volume to zero. Never send a zero-lot
+    # verdict for a symbol whose minimum is within the configured hard cap.
+    if lot <= 0 and lot_min > 0:
+        if lot_min > lot_max:
+            return RiskVerdict(False, reason=f"broker minimum volume {lot_min:g} exceeds max lot {lot_max:g}")
+        lot = lot_min
+        minimum_volume_override = True
     if lot <= 0:
         return RiskVerdict(False, reason="computed lot=0")
 

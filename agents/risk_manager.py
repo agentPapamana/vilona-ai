@@ -112,6 +112,7 @@ def evaluate(
     lot_min = lot_min or float(getattr(cfg, "min_lot", 0.01) or 0.01)
     lot_max = lot_max or float(getattr(cfg, "max_lot", 50.0) or 50.0)
     configured_max_lot = getattr(cfg, "max_lot", lot_max) or lot_max
+    lot_max = min(lot_max, float(configured_max_lot))
     lot = round(round(raw_lot / lot_step) * lot_step, 4)
     lot = min(lot, lot_max)
     minimum_volume_override = lot < lot_min

@@ -137,9 +137,11 @@ def evaluate(
         existing_notional += estimate_notional(p_symbol, p_volume, p_price)
     per_lot_notional = estimate_notional(snapshot.symbol, 1.0, entry)
 
-    if per_lot_notional > 0:
-        # Hard exposure caps always win, including when broker minimum volume
-        # is required. A minimum lot may bypass only rounding, never exposure.
+    cent_minimum_override = minimum_volume_override and str(getattr(snapshot, "symbol", "") or "").lower().endswith("c")
+    if per_lot_notional > 0 and not cent_minimum_override:
+        # Hard exposure caps win for normal contracts. Cent contracts size in
+        # the broker minimum lot as their atomic unit, so the override keeps
+        # that lot and relies on the broker margin check plus configured caps.
         if free_margin is not None and free_margin > 0:
             margin_lot_cap = (free_margin * 0.10) / per_lot_notional
             if margin_lot_cap < lot_min:
@@ -147,9 +149,7 @@ def evaluate(
             lot = min(lot, margin_lot_cap)
             lot = round((lot // lot_step) * lot_step, 4)
         notional_budget = max(0.0, equity_usd * 2.0 - existing_notional)
-        if notional_budget <= 0:
-            return RiskVerdict(False, reason="notional exposure limit exceeded")
-        if notional_budget / per_lot_notional < lot_min:
+        if notional_budget <= 0 or notional_budget / per_lot_notional < lot_min:
             return RiskVerdict(False, reason="notional exposure limit exceeded")
         lot = min(lot, notional_budget / per_lot_notional)
     # exposure cap reduced the calculated volume to zero. Never send a zero-lot

@@ -7,12 +7,15 @@ import logging
 from typing import Any
 
 from agents.judge import build_user_prompt
+from agents.researcher import SYSTEM_PROMPT as RESEARCH_SYSTEM_PROMPT, build_user_prompt as build_research_prompt, parse_research
 
 logger = logging.getLogger(__name__)
 
 ENTRY_SYSTEM_PROMPT = (
     "You manage a proposed trade. Review the signal, market, account and deterministic "
-    "risk result. Return JSON only: {\"action\":\"APPROVE|VETO|ADJUST\","
+    "risk result. A researcher brief may be supplied under 'research'; treat it as "
+    "advisory context only and never as permission to exceed the deterministic risk limits. "
+    "Return JSON only: {\"action\":\"APPROVE|VETO|ADJUST\","
     "\"reason\":\"short English reason\",\"lot_size\":number|null,"
     "\"sl_price\":number|null,\"tp_price\":number|null}. Use ADJUST only to reduce "
     "risk or improve protection. Never increase the supplied lot size or widen the stop."
@@ -71,8 +74,18 @@ def _parse(raw: str | None, actions: set[str]) -> dict | None:
     return data
 
 
-def entry_decision(client: Any, signal: Any, risk: Any, snapshot: Any, account: dict, timeout_s: float) -> dict | None:
-    raw = _request(client, ENTRY_SYSTEM_PROMPT, build_user_prompt(signal, risk, snapshot=snapshot, account=account), timeout_s)
+def researcher_brief(client: Any, snapshot: Any, timeout_s: float) -> dict | None:
+    """Obtain advisory market context; failure never blocks deterministic risk."""
+    raw = _request(client, RESEARCH_SYSTEM_PROMPT, build_research_prompt(snapshot), timeout_s)
+    if not raw:
+        return None
+    return parse_research(raw)
+
+def entry_decision(client: Any, signal: Any, risk: Any, snapshot: Any, account: dict, timeout_s: float,
+                   research: dict | None = None) -> dict | None:
+    raw = _request(client, ENTRY_SYSTEM_PROMPT,
+                   build_user_prompt(signal, risk, snapshot=snapshot, account=account, research=research),
+                   timeout_s)
     return _parse(raw, {"APPROVE", "VETO", "ADJUST"})
 
 

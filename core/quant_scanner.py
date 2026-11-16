@@ -1468,12 +1468,26 @@ class QuantScanner:
                 record_judge("ERROR", f"circuit open ({self.judge_breaker.state()})", "CircuitOpenError")
                 self._feed(f"LLM MANAGER unavailable for {symbol}; using deterministic fallback")
             else:
-                from core.llm_manager import entry_decision
+                from core.llm_manager import entry_decision, researcher_brief
                 from llm.client import get_llm_client
+                llm_client = get_llm_client()
+                research = None
+                if "researcher" in getattr(self.cfg, "enabled_personas", []):
+                    self._agent_feed("researcher", symbol, "ANALYZE — preparing advisory market brief")
+                    research = researcher_brief(
+                        llm_client, snapshot, float(getattr(llm_cfg, "timeout", 30) or 30)
+                    )
+                    if research is None:
+                        self._agent_feed("researcher", symbol, "ERROR — no usable brief; continuing with deterministic safeguards")
+                    else:
+                        self._agent_feed(
+                            "researcher", symbol,
+                            f"BRIEF — trend={research.get('trend', 'unknown')} levels={len(research.get('key_levels', []))} catalysts={len(research.get('catalysts', []))}"
+                        )
                 decision = entry_decision(
-                    get_llm_client(), signal, verdict, snapshot,
+                    llm_client, signal, verdict, snapshot,
                     {"equity": equity, "free_margin": free_margin, "open_positions": len(all_positions)},
-                    float(getattr(llm_cfg, "timeout", 30) or 30),
+                    float(getattr(llm_cfg, "timeout", 30) or 30), research=research,
                 )
                 if decision is None:
                     manager_error = True

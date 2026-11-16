@@ -131,6 +131,8 @@ class TerminalDashboard:
                 style = "yellow"
             elif "JUDGE" in upper:
                 style = "magenta"
+            elif "RESEARCHER" in upper:
+                style = "cyan"
             table.add_row(Text(log, style=style))
         return table
 
@@ -164,7 +166,7 @@ class TerminalDashboard:
                 layout["header"].update(self._get_header())
                 layout["market"].update(Panel(self._get_market_table(), title="Crypto Market Data (consumed)", border_style="cyan"))
                 layout["body"].update(Panel(self._get_log_table(), title="Live Trading Feed", border_style="bright_blue"))
-                layout["agents"].update(Panel(self._get_agents_table(), title="Agent Activity (trader / risk_manager / judge)", border_style="magenta"))
+                layout["agents"].update(Panel(self._get_agents_table(), title="Agent Activity (trader / risk_manager / judge / researcher)", border_style="magenta"))
                 layout["footer"].update(self._get_footer())
                 time.sleep(0.5)
 

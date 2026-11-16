@@ -88,3 +88,15 @@ The first matched-null replay attempt was invalid: candidate P/L residual reache
 The operator explicitly authorized implementing the XAUUSD M15/1h breakout rule despite the recorded B9 failure (full-period PF `0.636`, OOS PF `0.705`). The implementation is bounded by the existing stale-tick, weekend, spread, daily-loss, drawdown, consecutive-loss, exposure, LLM, protected-SL, and kill-switch guards. This authorization does **not** change the Phase 4 research verdict or prove production readiness.
 
 The scanner now supports `KINGAI_STRATEGY=breakout` with a 20-bar M15 range break aligned to 1h EMA21/EMA50. Focused tests: `53 passed`. No live order was sent during this implementation; the operator kill switch remains the final execution control until runtime verification is complete.
+
+## 2026-11-17 — XAUUSD candidate recheck on verified 190-day data
+
+On branch `improve/smart-bot`, the existing backtest tool was rerun without changing production strategy code or tuning against OOS results. All results use `data/candles_m5_verified`/`data/candles`, fixed configured costs, and the existing walk-forward split. Results were recorded in `vilona_v2.db` under `research:*` settings.
+
+| Candidate | Full trades | Full PF | Full expectancy | OOS trades | OOS PF | OOS expectancy | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `scalp_5m` | 2,450 | 0.765 | -$3.13 | 1,245 | 0.758 | -$4.25 | FAIL |
+| M15 `pullback` | 462 | 0.824 | -$3.71 | 238 | 0.738 | -$5.59 | FAIL |
+| M15 `breakout` | 309 | 1.019 | +$0.40 | 156 | 0.956 | -$1.03 | FAIL |
+
+The breakout candidate is closest but still fails the required PF > 1.1 and positive OOS expectancy. No candidate is promoted to the scanner or live execution. Paper mode and the Phase 4 block remain unchanged.

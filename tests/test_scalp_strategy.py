@@ -194,9 +194,8 @@ def _build_scanner(tmp_path, monkeypatch, strategy):
         min_confidence=0.0, symbol_cooldown_seconds=0, strategy=strategy,
         max_lot=0.01, min_lot=0.01, max_risk_per_trade_pct=0.5,
     ))
-    # 0.40/bar over 60 bars keeps the 15m EMA gap above the 0.15 ATR trend floor
-    # even after the widened 5m range inflates ATR.
-    bridge = _Bridge(trend_step=0.40, trigger_step=0.02)
+    # Keep the synthetic 15m trend clearly above the production 0.35 ATR floor.
+    bridge = _Bridge(trend_step=0.80, trigger_step=0.02)
     return QuantScanner(bridge=bridge, cfg=cfg, dashboard=None), bridge
 
 
@@ -290,3 +289,78 @@ def test_scalp_waits_when_5m_rsi_oversold():
 
     assert action == "WAIT"
     assert "RSI oversold" in reason
+
+
+def _valid_buy_inputs():
+    trend = _candles([100.0 + i * 0.20 for i in range(60)], step=900)
+    trigger = _candles([112.0 + i * 0.02 for i in range(50)] + [113.0 - i * 0.04 for i in range(7)] + [112.75 + i * 0.05 for i in range(3)])
+    return trend, trigger, float(trigger[-1]["close"]) + 0.05
+
+
+def _valid_sell_inputs():
+    trend = _candles([100.0 - i * 0.20 for i in range(60)], step=900)
+    trigger = _candles([88.0 - i * 0.02 for i in range(50)] + [87.0 + i * 0.04 for i in range(7)] + [87.25 - i * 0.05 for i in range(3)])
+    return trend, trigger, float(trigger[-1]["close"]) - 0.05
+
+
+def test_scalp_waits_when_spread_is_too_costly_relative_to_atr():
+    """A spread that eats a large share of ATR must block the entry."""
+    trend, trigger, price = _valid_buy_inputs()
+
+    action, conf, reason, atr = compute_scalp_5m_signal(
+        trend, trigger, price, band_mult=1.5, spread_price=99.0, max_spread_atr=0.35
+    )
+
+    assert action == "WAIT"
+    assert "spread too costly" in reason
+    assert conf == 0.0
+
+
+def test_scalp_allows_entry_when_spread_is_cheap_relative_to_atr():
+    """A tight spread must not block an otherwise valid setup."""
+    trend, trigger, price = _valid_buy_inputs()
+    _, _, _, atr = compute_scalp_5m_signal(trend, trigger, price, band_mult=1.5)
+
+    action, _, reason, _ = compute_scalp_5m_signal(
+        trend, trigger, price, band_mult=1.5, spread_price=0.1 * atr, max_spread_atr=0.35
+    )
+
+    assert action == "BUY", reason
+
+
+def test_scalp_waits_when_last_5m_candle_body_opposes_trend():
+    """A material counter-trend 5m close must cancel a bullish setup."""
+    trend, trigger, _ = _valid_buy_inputs()
+    reversing = _candles([112.0 + i * 0.02 for i in range(50)] + [113.0 - i * 0.04 for i in range(7)] + [112.75 + i * 0.05 for i in range(2)])
+    last = trigger[-1]
+    reversing.append({**last, "open": float(last["close"]) + 3.0, "close": float(last["close"]), "high": float(last["close"]) + 3.2})
+    price = float(reversing[-1]["close"])
+
+    action, conf, reason, atr = compute_scalp_5m_signal(trend, reversing, price, band_mult=1.5)
+
+    assert action == "WAIT"
+    assert "candle close opposes trend" in reason
+
+
+def test_scalp_waits_when_15m_ema21_slope_turns_down():
+    """A bullish EMA21 > EMA50 without a rising slope must not produce BUY."""
+    falling = [100.0 + i * 0.20 for i in range(55)] + [110.6 - i * 0.55 for i in range(5)]
+    trend = _candles(falling, step=900)
+    _, trigger, price = _valid_buy_inputs()
+
+    action, conf, reason, atr = compute_scalp_5m_signal(trend, trigger, price, band_mult=1.5)
+
+    assert action == "WAIT"
+    assert "slope does not confirm" in reason
+
+
+def test_scalp_sell_requires_rising_spread_free_slope():
+    """Sell setups pass the same cost and confirmation gates as buys."""
+    trend, trigger, price = _valid_sell_inputs()
+    _, _, _, atr = compute_scalp_5m_signal(trend, trigger, price, band_mult=1.5)
+
+    action, _, reason, _ = compute_scalp_5m_signal(
+        trend, trigger, price, band_mult=1.5, spread_price=0.1 * atr, max_spread_atr=0.35
+    )
+
+    assert action == "SELL", reason

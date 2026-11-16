@@ -268,7 +268,9 @@ def compute_setup_confidence(
 
 def compute_scalp_5m_signal(c15m: List[Dict[str, Any]], c5m: List[Dict[str, Any]],
                            price: float, band_mult: float,
-                           c1h: Optional[List[Dict[str, Any]]] = None) -> tuple[str, float, str, float]:
+                           c1h: Optional[List[Dict[str, Any]]] = None,
+                           spread_price: float = 0.0,
+                           max_spread_atr: float = 0.0) -> tuple[str, float, str, float]:
     """Return a conservative 15m-trend/5m-pullback signal and its ATR.
 
     Requires:
@@ -286,12 +288,23 @@ def compute_scalp_5m_signal(c15m: List[Dict[str, Any]], c5m: List[Dict[str, Any]
     atr = compute_atr(c5m, 14)
     if atr <= 0 or ema21 <= 0 or ema50 <= 0:
         return "WAIT", 0.0, "invalid scalp indicators", atr
+    if spread_price > 0 and max_spread_atr > 0 and spread_price / atr > max_spread_atr:
+        return "WAIT", 0.0, f"spread too costly ({spread_price / atr:.2f} ATR > {max_spread_atr:.2f})", atr
     entry = float(price)
     c5m_closes = [float(row.get("close", 0)) for row in c5m]
     trigger_ema = compute_ema(c5m_closes, 21)
     distance = abs(entry - trigger_ema)
     trend_strength = abs(ema21 - ema50) / atr
-    if trend_strength < 0.25:
+    prior_ema21 = compute_ema(trend_closes[:-1], 21)
+    if prior_ema21 <= 0 or (ema21 > ema50 and ema21 <= prior_ema21) or (ema21 < ema50 and ema21 >= prior_ema21):
+        return "WAIT", 0.0, "15m EMA21 slope does not confirm trend", atr
+    last_candle = c5m[-1]
+    candle_open = float(last_candle.get("open", last_candle.get("close", 0)) or 0)
+    last_close = float(last_candle.get("close", 0) or 0)
+    candle_body = abs(last_close - candle_open)
+    if candle_body >= 0.1 * atr and ((ema21 > ema50 and last_close < candle_open) or (ema21 < ema50 and last_close > candle_open)):
+        return "WAIT", 0.0, "5m candle close opposes trend", atr
+    if trend_strength < 0.35:
         return "WAIT", 0.0, f"15m trend too weak ({trend_strength:.2f} ATR)", atr
 
     # 1H Trend Alignment (Multi-timeframe gate):
@@ -475,13 +488,21 @@ class QuantScanner:
                 commission = float(deal.get("commission"))
                 swap = float(deal.get("swap"))
                 exit_price = deal.get("price")
+                from core.trade_telemetry import classify_outcome, classify_session
+                telemetry = {
+                    "profit": profit, "commission": commission, "swap": swap,
+                    "exit_price": float(exit_price) if exit_price is not None else None,
+                    "closed_at": float(deal.get("time") or time.time()),
+                }
+                telemetry["outcome"] = deal.get("outcome") or classify_outcome({**record, **telemetry})
+                telemetry["session"] = deal.get("session") or classify_session(telemetry["closed_at"])
                 saved = self.db.save_trade({
                     "ticket": ticket,
                     "symbol": deal.get("symbol") or record.get("symbol"),
                     "side": record.get("side"),
                     "quantity": record.get("quantity"),
                     "entry_price": record.get("entry_price"),
-                    "exit_price": float(exit_price) if exit_price is not None else None,
+                    "exit_price": telemetry["exit_price"],
                     "sl": record.get("sl"),
                     "tp": record.get("tp"),
                     "profit": profit,
@@ -490,8 +511,12 @@ class QuantScanner:
                     "strategy": record.get("strategy", "vilona-auto"),
                     "reason": record.get("reason", "closed: broker deal history"),
                     "opened_at": record.get("opened_at") or time.time(),
-                    "closed_at": float(deal.get("time") or time.time()),
+                    "closed_at": telemetry["closed_at"],
                     "status": "closed",
+                    "spread": record.get("spread"),
+                    "atr": record.get("atr"),
+                    "session": telemetry["session"],
+                    "outcome": telemetry["outcome"],
                 })
                 if saved:
                     self._feed(f"CLOSED TRADE ticket={ticket} profit={profit}")
@@ -1182,7 +1207,9 @@ class QuantScanner:
                 return
             band_mult = float(getattr(self.cfg.trading, "scalp_pullback_band", 1.5))
             action, confidence, reason, atr_signal = compute_scalp_5m_signal(
-                c15m, c5m, float(tick.bid), band_mult, c1h=c1h
+                c15m, c5m, float(tick.bid), band_mult, c1h=c1h,
+                spread_price=max(0.0, float(tick.ask) - float(tick.bid)),
+                max_spread_atr=float(getattr(self.cfg.trading, "scalp_max_spread_atr", 0.0)),
             )
             candle_time = c15m[-1].get("time") if c15m else 0
             self._publish_market_data(
@@ -1682,6 +1709,17 @@ class QuantScanner:
                     self._last_setup_key[symbol] = setup_key
                 except Exception:
                     logger.exception("Failed to update successful setup %s", setup_key)
+                self._tracked_positions[int(trade_result.ticket)] = {
+                    "symbol": symbol,
+                    "side": action.lower(),
+                    "quantity": verdict.lot_size,
+                    "entry_price": float(signal.entry_hint or (tick.ask if action == "BUY" else tick.bid)),
+                    "sl": verdict.sl_price,
+                    "tp": verdict.tp_price,
+                    "opened_at": time.time(),
+                    "spread": abs(float(getattr(tick, "ask", 0.0)) - float(getattr(tick, "bid", 0.0))),
+                    "atr": float(getattr(signal, "atr", 0.0) or 0.0),
+                }
         else:
             # Rejected attempts are recorded too; they must not arm cooldown.
             try:

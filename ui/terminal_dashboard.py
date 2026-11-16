@@ -23,6 +23,12 @@ class TerminalDashboard:
         self.config = config
         self._logs: List[str] = []
         self._agents_logs: List[str] = []
+        try:
+            from core.state_db import StateDB
+            self._db = StateDB()
+        except Exception:
+            logger.exception("Dashboard trade telemetry unavailable")
+            self._db = None
         self._market: dict[str, dict[str, Any]] = {}
 
     def update_market(self, symbol: str, tick: Any, candles: dict[str, Any] | None = None,
@@ -77,10 +83,15 @@ class TerminalDashboard:
         try:
             pl_method = getattr(self.bridge, "calculate_daily_pl", None) or getattr(self.bridge, "calc_daily_pl", None)
             pl, _, _ = pl_method(symbol) if pl_method else (0.0, 0, 0)
-            currency = getattr(self.bridge, "account_currency", None) or "USDT"
+            account = self.bridge.get_account_info() if hasattr(self.bridge, "get_account_info") else None
+            currency = str(getattr(account, "currency", "") or getattr(self.bridge, "account_currency", "") or "account currency")
+            is_cent = any(str(item).upper().endswith("C") for item in symbols)
+            if is_cent and currency.upper() not in {"USC", "EUC", "GBPC"}:
+                currency = f"{currency} cents"
             pnl_color = "green" if pl > 0 else "red" if pl < 0 else "white"
             pnl_text = f"[{pnl_color}]P/L: {pl:+.2f} {currency}[/{pnl_color}]"
         except Exception:
+            logger.exception("Dashboard account P/L unavailable")
             pnl_text = "P/L: ---"
 
         title = Text("🤖 Vilona AI v2", style="bold magenta")
@@ -118,7 +129,26 @@ class TerminalDashboard:
             values.extend(f"{float((closes.get(tf) or {}).get('close', 0)):.{digits}f}" for tf in ("5m", "15m", "1h"))
             table.add_row(*values)
         return table
-
+    def _get_trade_table(self) -> Table:
+        table = Table(show_header=True, box=None, expand=True)
+        for heading in ("Scope", "Trades", "Win%", "Net P/L", "Expectancy", "PF"):
+            table.add_column(heading, justify="right" if heading != "Scope" else "left")
+        if self._db is None:
+            table.add_row("Telemetry unavailable", "—", "—", "—", "—", "—")
+            return table
+        try:
+            aggregate = self._db.get_trade_aggregates()
+            buckets = [("ALL", aggregate["overall"])]
+            buckets.extend((side.upper(), stats) for side, stats in aggregate["by_side"].items() if stats["trades"])
+            buckets.extend((session.replace("_", " ").title(), stats) for session, stats in aggregate["by_session"].items() if stats["trades"])
+            for scope, stats in buckets:
+                table.add_row(scope, str(stats["trades"]), f"{stats['win_rate']:.1f}%",
+                              f"{stats['net_profit']:+.2f}", f"{stats['expectancy']:+.2f}",
+                              f"{stats['profit_factor']:.2f}")
+        except Exception:
+            logger.exception("Dashboard trade telemetry render failed")
+            table.add_row("Telemetry error", "—", "—", "—", "—", "—")
+        return table
 
     def _get_agents_table(self) -> Table:
         table = Table(show_header=False, box=None, expand=True)
@@ -158,6 +188,7 @@ class TerminalDashboard:
             Layout(name="header", size=3),
             Layout(name="market", size=5),
             Layout(name="body", minimum_size=10),
+            Layout(name="trades", minimum_size=6),
             Layout(name="agents", minimum_size=8),
             Layout(name="footer", size=3),
         )
@@ -166,6 +197,7 @@ class TerminalDashboard:
                 layout["header"].update(self._get_header())
                 layout["market"].update(Panel(self._get_market_table(), title="Crypto Market Data (consumed)", border_style="cyan"))
                 layout["body"].update(Panel(self._get_log_table(), title="Live Trading Feed", border_style="bright_blue"))
+                layout["trades"].update(Panel(self._get_trade_table(), title="Closed Trade Performance", border_style="green"))
                 layout["agents"].update(Panel(self._get_agents_table(), title="Agent Activity (trader / risk_manager / judge / researcher)", border_style="magenta"))
                 layout["footer"].update(self._get_footer())
                 time.sleep(0.5)

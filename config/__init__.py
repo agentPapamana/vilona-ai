@@ -89,6 +89,8 @@ class TradingConfig:
     symbol_cooldown_seconds: int = 300
     min_confidence: float = 0.55
     max_spread_pct_default: float = 0.15
+    # Scalping must have enough movement to overcome the live spread.
+    scalp_max_spread_atr: float = 0.35
     sl_atr_mult: float = 1.5
     tp_atr_mult: float = 3.0
     min_volume_usd: float = 100.0
@@ -225,6 +227,11 @@ class Config:
         scalp_band_raw = os.getenv("KINGAI_SCALP_PULLBACK_BAND")
         if scalp_band_raw:
             config.trading.scalp_pullback_band = float(scalp_band_raw)
+        spread_atr_raw = os.getenv("KINGAI_SCALP_MAX_SPREAD_ATR")
+        if spread_atr_raw:
+            config.trading.scalp_max_spread_atr = float(spread_atr_raw)
+            if config.trading.scalp_max_spread_atr <= 0:
+                raise ValueError("KINGAI_SCALP_MAX_SPREAD_ATR must be positive")
         breakout_raw = os.getenv("KINGAI_BREAKOUT_LOOKBACK")
         if breakout_raw:
             config.trading.breakout_lookback = int(breakout_raw)

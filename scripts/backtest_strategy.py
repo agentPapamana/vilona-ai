@@ -264,7 +264,11 @@ def run_symbol_scalp(symbol, candles_5m, cfg, spread, commission, risk_pct, equi
         c15_window = c15m[end - 59 : end + 1]
         c5_window = candles_5m[i - 19 : i + 1]
         price = float(bar["close"])
-        action, _c, _r, atr = compute_scalp_5m_signal(c15_window, c5_window, price, band)
+        action, _c, _r, atr = compute_scalp_5m_signal(
+            c15_window, c5_window, price, band,
+            spread_price=spread,
+            max_spread_atr=float(getattr(cfg.trading, "scalp_max_spread_atr", 0.0)),
+        )
         if action == "WAIT" or atr <= 0:
             continue
         bullish = action == "BUY"

@@ -9,6 +9,7 @@ from typing import List, Optional, Dict, Any
 
 from config import get_config, DatabaseConfig
 from trading.bridge_ccxt import Position
+from core.trade_telemetry import build_trade_aggregates
 
 class StateDB:
     def __init__(self, path: Optional[str] = None):
@@ -71,7 +72,11 @@ class StateDB:
                     reason TEXT,
                     opened_at REAL NOT NULL,
                     closed_at REAL,
-                    status TEXT DEFAULT 'open'
+                    status TEXT DEFAULT 'open',
+                    spread REAL,
+                    atr REAL,
+                    session TEXT,
+                    outcome TEXT
                 );
                 CREATE TABLE IF NOT EXISTS daily_pl (
                     date TEXT PRIMARY KEY,
@@ -154,6 +159,10 @@ class StateDB:
             }
             if "model" not in columns:
                 self._conn.execute("ALTER TABLE judge_decisions ADD COLUMN model TEXT")
+            trade_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(trades)").fetchall()}
+            for column, definition in (("spread", "REAL"), ("atr", "REAL"), ("session", "TEXT"), ("outcome", "TEXT")):
+                if column not in trade_columns:
+                    self._conn.execute(f"ALTER TABLE trades ADD COLUMN {column} {definition}")
             self._conn.commit()
 
     def save_position(self, pos: Position) -> int:
@@ -309,11 +318,12 @@ class StateDB:
                 return False
             try:
                 self._conn.execute(
-                    """INSERT INTO trades (ticket, symbol, side, quantity, entry_price, exit_price, sl, tp, profit, commission, swap, strategy, reason, opened_at, closed_at, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO trades (ticket, symbol, side, quantity, entry_price, exit_price, sl, tp, profit, commission, swap, strategy, reason, opened_at, closed_at, status, spread, atr, session, outcome)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (ticket, trade.get('symbol'), trade.get('side'), trade.get('quantity'), trade.get('entry_price'),
                      trade.get('exit_price'), trade.get('sl'), trade.get('tp'), trade.get('profit'), trade.get('commission'),
-                     trade.get('swap'), trade.get('strategy'), trade.get('reason'), trade.get('opened_at'), trade.get('closed_at'), trade.get('status', 'closed')))
+                     trade.get('swap'), trade.get('strategy'), trade.get('reason'), trade.get('opened_at'), trade.get('closed_at'),
+                     trade.get('status', 'closed'), trade.get('spread'), trade.get('atr'), trade.get('session'), trade.get('outcome')))
                 self._conn.commit()
                 return True
             except sqlite3.IntegrityError:
@@ -352,6 +362,26 @@ class StateDB:
             if not self._conn:
                 return []
             return [dict(r) for r in self._conn.execute("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,)).fetchall()]
+
+    def get_trade_telemetry(self, symbol: Optional[str] = None, strategy: Optional[str] = None) -> List[Dict]:
+        """Return closed trades with the fields required for edge review."""
+        with self._lock:
+            if not self._conn:
+                return []
+            query = "SELECT * FROM trades WHERE status='closed'"
+            params: List[Any] = []
+            if symbol:
+                query += " AND symbol=?"
+                params.append(symbol)
+            if strategy:
+                query += " AND strategy=?"
+                params.append(strategy)
+            query += " ORDER BY closed_at ASC"
+            return [dict(r) for r in self._conn.execute(query, params).fetchall()]
+
+    def get_trade_aggregates(self, symbol: Optional[str] = None, strategy: Optional[str] = None) -> Dict[str, Any]:
+        """Aggregate closed trades by side and session with one accounting rule."""
+        return build_trade_aggregates(self.get_trade_telemetry(symbol=symbol, strategy=strategy))
 
     def save_daily_pl(self, date: str, pl: float, wins: int, total: int, equity: float):
         with self._lock:

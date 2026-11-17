@@ -319,11 +319,27 @@
       "exit_reason": "OPEN",
       "be_triggered": false,
       "timestamp": 1794909770
+    },
+    {
+      "ticket": 14646292366,
+      "symbol": "XAUUSDc",
+      "action": "SELL",
+      "open_price": 3855.85,
+      "close_price": null,
+      "sl": 3861.95,
+      "tp": 3854.65,
+      "pnl_usd": 0.0,
+      "spread_at_entry": 0.36000000000012733,
+      "slippage": 0.0,
+      "duration_seconds": 0,
+      "exit_reason": "OPEN",
+      "be_triggered": false,
+      "timestamp": 1794911153
     }
   ],
   "spread_telemetry": {
     "XAUUSDc": {
-      "avg": 0.3565,
+      "avg": 0.3538,
       "min": 0.34,
       "max": 2.5,
       "samples": 60,
@@ -337,5 +353,5 @@
       "current": 0.0002
     }
   },
-  "updated_at": 1794909827
+  "updated_at": 1794911422
 }

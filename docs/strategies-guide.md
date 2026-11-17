@@ -168,9 +168,12 @@ symbols:
     micro_be_points: 1.0               # Geser SL ke BE setelah profit mencapai +1.0 poin
     max_spread_points: 1.0             # Tolak transaksi jika spread pasar > 1.0 poin
     risk_per_trade_pct: 0.5            # Persentase risiko per transaksi
-    fixed_lot: 0.01                    # Ukuran lot yang digunakan
+    fixed_lot: 0.01                    # Lot dasar
     use_fixed_lot: true                # true: gunakan fixed_lot | false: hitung lot otomatis
-    min_confidence: 0.70               # Ambang batas probabilitas sinyal (0.0 - 1.0)
+    auto_scale_lot: true               # DYNAMIC AUTO-RESIZE LOT (0.01 -> 0.05 -> maks 0.50 berdasarkan kekuatan tren)
+    lot_min_scale: 0.01                # Batas bawah lot
+    lot_max_scale: 0.50                # Batas atas lot maksimal
+    min_confidence: 0.54               # Ambang batas probabilitas sinyal (0.0 - 1.0)
     cooldown_bars: 1                   # Jeda candle M5 setelah trade ditutup
     indicators:
       ema_fast: 9

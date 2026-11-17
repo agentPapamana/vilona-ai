@@ -50,6 +50,9 @@ class SymbolScalpConfig:
     risk_per_trade_pct: float = 0.5  # Max 0.5%
     fixed_lot: float = 0.01
     use_fixed_lot: bool = True
+    auto_scale_lot: bool = False  # Dynamic lot scale based on trend quality (0.01 -> 0.05 -> max 0.50)
+    lot_min_scale: float = 0.01
+    lot_max_scale: float = 0.50
     min_confidence: float = 0.60
     cooldown_bars: int = 1
     indicators: IndicatorSettings = field(default_factory=IndicatorSettings)
@@ -237,6 +240,9 @@ def load_scalp_config(path: str = DEFAULT_CONFIG_PATH) -> ScalpConfigFile:
                     risk_per_trade_pct=min(0.5, float(s_data.get("risk_per_trade_pct", 0.5))),
                     fixed_lot=float(s_data.get("fixed_lot", 0.01)),
                     use_fixed_lot=bool(s_data.get("use_fixed_lot", True)),
+                    auto_scale_lot=bool(s_data.get("auto_scale_lot", False)),
+                    lot_min_scale=float(s_data.get("lot_min_scale", 0.01)),
+                    lot_max_scale=float(s_data.get("lot_max_scale", 0.50)),
                     min_confidence=float(s_data.get("min_confidence", 0.60)),
                     cooldown_bars=int(s_data.get("cooldown_bars", 1)),
                     indicators=ind,
@@ -286,6 +292,9 @@ def save_scalp_config(config: ScalpConfigFile, path: str = DEFAULT_CONFIG_PATH) 
                 "risk_per_trade_pct": scfg.risk_per_trade_pct,
                 "fixed_lot": scfg.fixed_lot,
                 "use_fixed_lot": scfg.use_fixed_lot,
+                "auto_scale_lot": getattr(scfg, "auto_scale_lot", False),
+                "lot_min_scale": getattr(scfg, "lot_min_scale", 0.01),
+                "lot_max_scale": getattr(scfg, "lot_max_scale", 0.50),
                 "min_confidence": scfg.min_confidence,
                 "cooldown_bars": scfg.cooldown_bars,
                 "indicators": {

@@ -216,7 +216,24 @@ class ScalpAgresifEngine:
         lot_max = float(getattr(symbol_info, "lot_max", 50.0) or 50.0)
         max_lot_cap = float(getattr(trading_cfg, "max_lot", 50.0) or 50.0)
 
-        if sym_cfg.use_fixed_lot:
+        if getattr(sym_cfg, "auto_scale_lot", False):
+            # Dynamic trend scaling: 0.01 -> 0.05 -> up to 0.50 based on signal confidence
+            min_scale = getattr(sym_cfg, "lot_min_scale", 0.01)
+            max_scale = min(0.50, getattr(sym_cfg, "lot_max_scale", 0.50))
+            conf = float(sig.confidence)
+            if conf >= 0.85:
+                lot_size = min(max_scale, 0.05 * 2.0) if conf >= 0.90 else 0.05
+                if conf >= 0.95:
+                    lot_size = min(max_scale, 0.10)
+            elif conf >= 0.70:
+                lot_size = 0.03
+            elif conf >= 0.60:
+                lot_size = 0.02
+            else:
+                lot_size = min_scale
+            lot_size = max(min_scale, min(lot_size, max_scale))
+            self._feed(f"[LOT SCALE] Dynamic size: lot={lot_size} (trend conf={conf:.2f}, range: {min_scale} - {max_scale})")
+        elif sym_cfg.use_fixed_lot:
             lot_size = sym_cfg.fixed_lot
         else:
             # Enforce max 0.5% risk

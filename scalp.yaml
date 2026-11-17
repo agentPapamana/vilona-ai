@@ -1,9 +1,9 @@
 version: 1.0.0
-generated_at: '2026-11-17T10:00:02.599323+00:00'
+generated_at: '2026-11-17T10:26:39.613423+00:00'
 market_regime: moderate
 ai_orchestrator:
   last_run_status: DISCONNECTED
-  last_attempt: '2026-11-17T10:00:02.599369+00:00'
+  last_attempt: '2026-11-17T10:26:39.613463+00:00'
   model_used: pr/claude-opus-5-5
 global_settings:
   active: true
@@ -14,12 +14,15 @@ symbols:
   XAUUSDc:
     enabled: true
     tp_points: 1.2
-    sl_points: 6.1
+    sl_points: 5.9
     micro_be_points: 0.8
     max_spread_points: 1.2
     risk_per_trade_pct: 0.3
     fixed_lot: 0.01
     use_fixed_lot: true
+    auto_scale_lot: true
+    lot_min_scale: 0.01
+    lot_max_scale: 0.5
     min_confidence: 0.54
     cooldown_bars: 1
     indicators:
@@ -43,6 +46,9 @@ symbols:
     risk_per_trade_pct: 0.5
     fixed_lot: 0.01
     use_fixed_lot: true
+    auto_scale_lot: false
+    lot_min_scale: 0.01
+    lot_max_scale: 0.5
     min_confidence: 0.6
     cooldown_bars: 1
     indicators:

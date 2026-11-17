@@ -80,3 +80,27 @@ def test_cap_notional_allows_small_exposure():
 
     assert verdict.approved is True, verdict.reason
     assert verdict.lot_size > 0
+
+
+def _xau_cent_verdict(equity: float):
+    # XAUUSDc: 5.0-point stop at 0.01 lot loses $5 (per-lot risk $500).
+    snapshot = _snapshot("XAUUSDc", 3845.0, 5.0, tick_value=0.1, tick_size=0.001)
+    signal = Signal(symbol="XAUUSDc", action="SELL", confidence=0.9, reason="flush")
+    cfg = TradingConfig(max_risk_per_trade_pct=10.0, sl_atr_mult=1.0, tp_atr_mult=3.0)
+    return risk_evaluate(signal=signal, snapshot=snapshot, equity_usd=equity, cfg=cfg)
+
+
+def test_lot_never_rounds_up_past_risk_budget():
+    """$46 * 10% = $4.60 budget buys 0.0092 lot; rounding up to 0.01 would risk $5."""
+    verdict = _xau_cent_verdict(46.0)
+
+    assert verdict.approved is False, verdict.reason
+    assert "minimum lot risk 5.00 exceeds max risk 4.60" in verdict.reason
+
+
+def test_lot_exactly_at_risk_budget_is_not_floored_away():
+    """$50 * 10% = $5 budget buys exactly 0.01 lot despite float division error."""
+    verdict = _xau_cent_verdict(50.0)
+
+    assert verdict.approved is True, verdict.reason
+    assert verdict.lot_size == 0.01

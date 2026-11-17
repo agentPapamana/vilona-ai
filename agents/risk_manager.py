@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from dataclasses import dataclass
 from typing import Optional, Union, Any
 from types import SimpleNamespace
@@ -110,7 +111,10 @@ def evaluate(
     lot_max = lot_max or float(getattr(cfg, "max_lot", 50.0) or 50.0)
     configured_max_lot = getattr(cfg, "max_lot", lot_max) or lot_max
     lot_max = min(lot_max, float(configured_max_lot))
-    lot = round(round(raw_lot / lot_step) * lot_step, 4)
+    # Floor, never round up: rounding up would size the stop-loss risk past
+    # the configured budget (e.g. 0.0092 -> 0.01) and skip the minimum-lot check.
+    # The epsilon absorbs float error such as 0.03 / 0.01 == 2.9999999999999996.
+    lot = round(math.floor(raw_lot / lot_step + 1e-9) * lot_step, 4)
     lot = min(lot, lot_max)
     minimum_volume_override = lot < lot_min
     if minimum_volume_override and lot_min > lot_max:

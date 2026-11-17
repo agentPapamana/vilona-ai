@@ -1,0 +1,59 @@
+version: 1.0.0
+generated_at: '2026-11-17T10:00:02.599323+00:00'
+market_regime: moderate
+ai_orchestrator:
+  last_run_status: DISCONNECTED
+  last_attempt: '2026-11-17T10:00:02.599369+00:00'
+  model_used: pr/claude-opus-5-5
+global_settings:
+  active: true
+  max_concurrent_scalp_positions: 1
+  max_risk_per_trade_pct: 0.5
+  emergency_hard_sl_points: 9.0
+symbols:
+  XAUUSDc:
+    enabled: true
+    tp_points: 1.2
+    sl_points: 6.1
+    micro_be_points: 0.8
+    max_spread_points: 1.2
+    risk_per_trade_pct: 0.3
+    fixed_lot: 0.01
+    use_fixed_lot: true
+    min_confidence: 0.54
+    cooldown_bars: 1
+    indicators:
+      ema_fast: 9
+      ema_slow: 21
+      trend_filter_ema: 50
+      rsi_period: 14
+      rsi_overbought: 70.0
+      rsi_oversold: 30.0
+      atr_multiplier_band: 2.0
+    weights:
+      tf_1h: 0.45
+      tf_30m: 0.35
+      tf_15m: 0.2
+  EURUSDc:
+    enabled: true
+    tp_points: 1.0
+    sl_points: 5.0
+    micro_be_points: 1.0
+    max_spread_points: 1.5
+    risk_per_trade_pct: 0.5
+    fixed_lot: 0.01
+    use_fixed_lot: true
+    min_confidence: 0.6
+    cooldown_bars: 1
+    indicators:
+      ema_fast: 9
+      ema_slow: 21
+      trend_filter_ema: 50
+      rsi_period: 14
+      rsi_overbought: 70.0
+      rsi_oversold: 30.0
+      atr_multiplier_band: 1.2
+    weights:
+      tf_1h: 0.5
+      tf_30m: 0.3
+      tf_15m: 0.2

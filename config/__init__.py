@@ -5,7 +5,33 @@ Centralized configuration management with environment variable overrides.
 """
 
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Optional, List, Dict
+import json
+
+def _load_env_file():
+    """Load .env file into os.environ if present, without requiring external dotenv package."""
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                # Strip inline comments for clean unquoted values
+                v = v.split("#")[0].strip()
+                v = v.strip("'\"")
+                if k and k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        pass
+
+_load_env_file()
 from typing import Optional, List, Dict
 import json
 
@@ -31,7 +57,7 @@ class ExchangeConfig:
     mt5_transport: str = "mcp"
     mt5_mcp_url: str = "http://127.0.0.1:8765"
     mt5_mcp_timeout: int = 30
-
+    mt5_client_token: str = ""
 
 @dataclass
 class TelegramConfig:
@@ -49,7 +75,7 @@ class LLMConfig:
     api_key: str = ""
     base_url: Optional[str] = None
     model: str = "anthropic/claude-3.5-sonnet"
-    reasoning_effort: str = "medium"
+    tuner_model: str = "antigravity-series"
     temperature: float = 0.3
     max_tokens: int = 4096
     timeout: int = 30
@@ -177,7 +203,7 @@ class Config:
         config.exchange.mt5_mcp_timeout = int(
             os.getenv("KINGAI_MT5_MCP_TIMEOUT", str(config.exchange.mt5_mcp_timeout))
         )
-        # Operator opt-in: refuse to run a live account without an alert channel.
+        config.exchange.mt5_client_token = os.getenv("MT5_CLIENT_TOKEN", os.getenv("KINGAI_MT5_CLIENT_TOKEN", config.exchange.mt5_client_token))
         # Default false so a demo canary can start with Telegram disabled.
         config.require_telegram = os.getenv("KINGAI_TELEGRAM_REQUIRED", "false").lower() == "true"
 
@@ -193,7 +219,7 @@ class Config:
         config.llm.api_key = os.getenv("KINGAI_LLM_API_KEY", config.llm.api_key)
         config.llm.base_url = os.getenv("KINGAI_LLM_BASE_URL", config.llm.base_url)
         config.llm.model = os.getenv("KINGAI_LLM_MODEL", config.llm.model)
-        config.llm.reasoning_effort = os.getenv("KINGAI_LLM_REASONING_EFFORT", config.llm.reasoning_effort)
+        config.llm.tuner_model = os.getenv("KINGAI_LLM_TUNER_MODEL", config.llm.tuner_model)
         config.llm.enabled = os.getenv("KINGAI_LLM_ENABLED", "false").lower() == "true"
         config.llm.require_approve = os.getenv("KINGAI_LLM_REQUIRE_APPROVE", "true").lower() == "true"
         timeout_raw = os.getenv("KINGAI_LLM_TIMEOUT")

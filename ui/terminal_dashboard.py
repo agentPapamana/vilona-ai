@@ -118,14 +118,14 @@ class TerminalDashboard:
         return table
     def _get_market_table(self) -> Table:
         table = Table(show_header=True, box=None, expand=True)
-        for heading in ("Venue", "Symbol", "Bid", "Ask", "Spread", "5m", "15m", "1h"):
+        for heading in ("Venue", "Symbol", "Bid", "Ask", "Spread (pts)", "5m", "15m", "1h"):
             table.add_column(heading, justify="right" if heading not in {"Venue", "Symbol"} else "left")
         for symbol, data in self._market.items():
             bid, ask = float(data.get("bid") or 0), float(data.get("ask") or 0)
-            spread = ((ask - bid) / bid * 100) if bid > 0 else 0.0
+            spread_pts = abs(ask - bid)
             closes = data.get("candles", {})
-            digits = max(0, min(10, int(data.get("digits", 5))))
-            values = [str(data.get("venue", "—")), str(symbol), f"{bid:.{digits}f}", f"{ask:.{digits}f}", f"{spread:.4f}%"]
+            digits = max(0, min(10, int(data.get("digits", 2))))
+            values = [str(data.get("venue", "—")), str(symbol), f"{bid:.{digits}f}", f"{ask:.{digits}f}", f"{spread_pts:.{digits}f}"]
             values.extend(f"{float((closes.get(tf) or {}).get('close', 0)):.{digits}f}" for tf in ("5m", "15m", "1h"))
             table.add_row(*values)
         return table
@@ -195,7 +195,7 @@ class TerminalDashboard:
         with Live(layout, refresh_per_second=1, screen=True) as live:
             while self.running:
                 layout["header"].update(self._get_header())
-                layout["market"].update(Panel(self._get_market_table(), title="Crypto Market Data (consumed)", border_style="cyan"))
+                layout["market"].update(Panel(self._get_market_table(), title="Live Market Data (MT5 / Crypto)", border_style="cyan"))
                 layout["body"].update(Panel(self._get_log_table(), title="Live Trading Feed", border_style="bright_blue"))
                 layout["trades"].update(Panel(self._get_trade_table(), title="Closed Trade Performance", border_style="green"))
                 layout["agents"].update(Panel(self._get_agents_table(), title="Agent Activity (trader / risk_manager / judge / researcher)", border_style="magenta"))

@@ -31,12 +31,12 @@ def create_trading_bridge(cfg):
         if cfg.exchange.name.lower() != "mt5":
             return CCXTBridge(cfg.exchange)
         if cfg.exchange.mt5_transport.lower() == "mcp":
-            return MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout)
+            return MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout, client_token=cfg.exchange.mt5_client_token)
         return MT5Bridge()
 
     ccxt_bridge = CCXTBridge(cfg.exchange)
     mt5_bridge = (
-        MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout)
+        MT5MCPBridge(mcp_url=cfg.exchange.mt5_mcp_url, timeout=cfg.exchange.mt5_mcp_timeout, client_token=cfg.exchange.mt5_client_token)
         if cfg.exchange.mt5_transport.lower() == "mcp" else MT5Bridge()
     )
     routes = {symbol: (ccxt_bridge if ("/" in symbol or ":" in symbol) else mt5_bridge) for symbol in symbols}

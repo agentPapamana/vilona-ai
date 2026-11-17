@@ -369,9 +369,10 @@ class QuantScanner:
         self.db = StateDB()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self.poll_interval = 30.0  # seconds between scan cycles
-        # symbol -> epoch seconds of the last accepted entry, for cooldown gating
-        self._last_entry_at: Dict[str, float] = {}
+        strategy_name = getattr(getattr(self.cfg, "trading", None), "strategy", "pullback")
+        # For high-frequency scalping, default to 3s loop; otherwise honor KINGAI_SCAN_INTERVAL
+        default_interval = 3.0 if strategy_name == "scalp_5m_agresif" else float(getattr(getattr(self.cfg, "trading", None), "scan_interval", 30.0) or 30.0)
+        self.poll_interval = default_interval
         # symbol -> deterministic setup fingerprint. A cooldown alone is not
         # enough: after restart or a short cooldown, the same unchanged setup
         # must not generate duplicate paper/live intents.
@@ -622,6 +623,13 @@ class QuantScanner:
         self._thread.start()
         self.log_effective_safety_config()
         logger.info("Autonomous QuantScanner started.")
+        if getattr(getattr(self.cfg, "trading", None), "strategy", "pullback") == "scalp_5m_agresif":
+            try:
+                from strategy import run_startup_calibration
+                symbols = getattr(self.cfg.trading, "symbols", ["XAUUSDc", "EURUSDc"])
+                run_startup_calibration(self, symbols)
+            except Exception as exc:
+                logger.warning("Startup scalp calibration failed: %s", exc)
 
     def stop(self):
         self._stop_event.set()
@@ -729,6 +737,13 @@ class QuantScanner:
     def manage_open_positions(self):
         """Manage open positions with optional LLM decisions and deterministic BE fallback."""
         try:
+            if getattr(getattr(self.cfg, "trading", None), "strategy", "pullback") == "scalp_5m_agresif":
+                try:
+                    from strategy import get_standalone_scalper
+                    scalper = get_standalone_scalper(scanner=self)
+                    scalper.manage_open_positions(self.bridge)
+                except Exception as exc:
+                    logger.debug("Scalp standalone position management error: %s", exc)
             positions = [] if bool(getattr(self.cfg, "paper_trading", False)) else (self.bridge.get_positions() or [])
             _owner = getattr(self.bridge, "bridge_for", None)
             llm_cfg = getattr(self.cfg, "llm", None)
@@ -1106,13 +1121,29 @@ class QuantScanner:
         # which is how 13 positions accumulated against a cap of 5.
         # PAPER never reads the broker book: without credentials there is no
         # private endpoint, and the simulated order is latched locally anyway.
+        strategy = getattr(getattr(self.cfg, "trading", None), "strategy", "pullback")
+        if strategy == "scalp_5m_agresif":
+            try:
+                from strategy import get_standalone_scalper
+                route = self.bridge.bridge_for(symbol) if hasattr(self.bridge, "bridge_for") else self.bridge
+                tick = route.get_tick(symbol) if hasattr(route, "get_tick") else None
+                if tick and float(getattr(tick, "bid", 0.0) or 0.0) > 0:
+                    self._last_heartbeat_tick_s[self._heartbeat_key(route)] = time.time()
+                scalper = get_standalone_scalper(scanner=self)
+                scalper.evaluate_symbol(symbol=symbol, route=route, tick=tick)
+            except Exception as exc:
+                self._feed(f"ERROR {symbol} [scalp_5m_agresif]: {exc}")
+                logger.exception("Scalp standalone engine evaluation failed for %s", symbol)
+            return
+
         paper_mode = bool(getattr(self.cfg, "paper_trading", False))
         route = self.bridge.bridge_for(symbol) if hasattr(self.bridge, "bridge_for") else self.bridge
         all_positions = [] if paper_mode else (route.get_positions() if hasattr(route, "get_positions") else [])
-        if len(all_positions) >= self.cfg.trading.max_concurrent_positions:
+        max_concur = getattr(getattr(self.cfg, "trading", None), "max_concurrent_positions", 5)
+        if len(all_positions) >= max_concur:
             self._feed(
                 f"{symbol}: skipped — {len(all_positions)} open positions "
-                f"at cap {self.cfg.trading.max_concurrent_positions}"
+                f"at cap {max_concur}"
             )
             return
 

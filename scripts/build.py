@@ -12,6 +12,7 @@ BASE_CMD = [
     "--include-package=agents",
     "--include-package=llm",
     "--include-package=ui",
+    "--include-package=strategy",
     "--enable-plugin=pyqt6",
     "app_server.py",
 ]

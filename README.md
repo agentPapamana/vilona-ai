@@ -31,8 +31,9 @@ Lightweight background presence with native notifications.
 - **Agent personas**: Optional researcher/trader/risk_manager/judge layers.
 - **Preserved Vilona AI logic**: Break-even, trailing stop, drift cancellation.
 - **SQLite persistence**: Survives restarts, tracks positions & trades.
+- **Standalone AI Micro-Scalper**: High-frequency 5m strategy with automated multi-timeframe backtest, dynamic `scalp.yaml`, thin TP (1-3 pts), and micro-breakeven.
+- **Multi-Strategy Support**: `scalp_5m_agresif`, `pullback`, `breakout`, and `scalp_5m`.
 - **SystemOne integration**: Connect to JEV ecosystem (optional).
-- **Single executable**: Nuitka build for Windows (.exe) and Linux.
 
 ## 🚀 Quick Start
 
@@ -47,9 +48,104 @@ No commands needed! Use the persistent button menu:
 | ⚙️ Control | Start/Stop/Restart scanner |
 | 📜 Logs | Recent trading activity |
 
-## Architecture
+## 📈 Trading Strategies & Configuration
 
+Vilona AI supports 4 trading strategies selected via the `KINGAI_STRATEGY` environment variable in `.env`.
+
+### 1. `scalp_5m_agresif` (Standalone AI Micro-Scalper) — *Recommended for Gold / Cent*
+* **Target Markets:** High-volatility instruments like XAUUSD (Gold), Forex micro pairs on Cent (`XAUUSDc`, `EURUSDc`) and Standard accounts.
+* **Core Philosophy:** Ultra-fast 5-minute execution with automated multi-timeframe backtest calibration upon boot and zero runtime AI latency.
+* **How It Works:**
+  1. **Startup Auto-Backtest:** Upon server boot, automatically pulls 80 candles of 1H, 30m, 15m, and 100 candles of 5m from MT5.
+  2. **AI Dynamic Setup:** The LLM Manager ("Scalper") consumes backtest metrics and short-term memory (`memory.json`), dynamically formulating optimal parameters into `scalp.yaml`. If AI is offline, native quantitative calibration automatically applies.
+  3. **Thin Take Profit:** Target TP is fixed between **1.0 to 3.0 points** per trade for high win-rate rapid turnover.
+  4. **Strict Stop Loss:** Bounded by a strict hard ceiling of **$\le 0.5\%$ account equity**.
+  5. **Micro-Breakeven (Micro-BE):** As soon as floating profit reaches **$\ge +1.0$ point**, the stop-loss instantly ratchets to `Entry + 0.1 pt` to lock in capital and eliminate downside risk.
+  6. **Volume & Spread Filter:** Automatically vetoes entries if tick volume is dormant ($<40\%$ of 10-bar average) or live spread exceeds `max_spread_points`.
+
+#### How to Configure `scalp_5m_agresif` in `.env`:
+```ini
+KINGAI_STRATEGY=scalp_5m_agresif
+KINGAI_EXCHANGE=mt5
+KINGAI_SYMBOLS=XAUUSDc
+KINGAI_PAPER_TRADING=true              # Set to false for live demo/real trading
+KINGAI_MAX_RISK_PCT=0.5
+KINGAI_MAX_CONCURRENT_POSITIONS=1
+KINGAI_SCAN_INTERVAL=3                 # 3-second rapid monitoring loop
 ```
+*Dynamic parameters can also be tuned directly in `scalp.yaml`.*
+
+---
+
+### 2. `pullback` (15m Swing Trend Follower) — *Default Core Strategy*
+* **Target Markets:** Major Forex pairs (EURUSD, USDJPY) and Crypto (BTC/USDT, ETH/USDT).
+* **How It Works:**
+  1. **Macro Trend (1H):** Confirmed by the alignment of EMA 21 and EMA 50 on the 1-hour timeframe.
+  2. **Entry Trigger (15m):** Enters when price pulls back toward the 15-minute EMA 21 within a $1.2 \times ATR_{15m}$ band.
+  3. **Take Profit & Stop Loss:** Wide swing targets ($TP = 3.0 \times ATR_{15m}$, $SL = 1.5 \times ATR_{15m}$) aiming for high Risk-to-Reward ($\ge 1:2$).
+  4. **LLM Manager Review:** Each trade candidate can be gated or adjusted by an LLM Judge before execution.
+
+#### How to Configure `pullback` in `.env`:
+```ini
+KINGAI_STRATEGY=pullback
+KINGAI_SYMBOLS=EURUSD,USDJPY,BTC/USDT:USDT
+KINGAI_SL_ATR_MULT=1.5
+KINGAI_TP_ATR_MULT=3.0
+KINGAI_SCAN_INTERVAL=30                # 30-second scan interval
+KINGAI_LLM_ENABLED=true                # Optional per-trade LLM approval
+```
+
+---
+
+### 3. `breakout` (15m Range Breakout)
+* **Target Markets:** Trending pairs undergoing consolidation or session opens.
+* **How It Works:**
+  1. **Donchian Channel Range:** Identifies the highest high and lowest low of the trailing 20 candles on the 15m timeframe (`KINGAI_BREAKOUT_LOOKBACK=20`).
+  2. **Trend Alignment:** BUY triggers only if price breaks above the 20-bar high while 1H EMA 21 > EMA 50; SELL triggers when breaking below 20-bar low while 1H EMA 21 < EMA 50.
+  3. **Stops:** Trailing stops and ATR-based profit targets.
+
+#### How to Configure `breakout` in `.env`:
+```ini
+KINGAI_STRATEGY=breakout
+KINGAI_BREAKOUT_LOOKBACK=20
+KINGAI_SL_ATR_MULT=1.5
+KINGAI_TP_ATR_MULT=3.0
+KINGAI_SCAN_INTERVAL=30
+```
+
+---
+
+### 4. `scalp_5m` (Legacy 5M Pullback)
+* **Target Markets:** Intraday M5 scalping with 15m trend filter.
+* **How It Works:**
+  1. Uses the 15m EMA 21 / EMA 50 pair for trend direction.
+  2. Triggers on a 5-minute pullback within `KINGAI_SCALP_PULLBACK_BAND` $\times ATR_{5m}$ of the 5m EMA 21.
+  3. Stops are calculated from 5-minute ATR with per-trade synchronous LLM approval.
+
+#### How to Configure `scalp_5m` in `.env`:
+```ini
+KINGAI_STRATEGY=scalp_5m
+KINGAI_SCALP_PULLBACK_BAND=1.5
+KINGAI_SCALP_MAX_SPREAD_ATR=0.35
+KINGAI_SCAN_INTERVAL=15
+```
+
+---
+
+### 📊 Strategy Comparison Matrix
+
+| Strategy | Primary TF | Secondary TF | Target TP | Max SL Risk | Micro-BE | Execution Latency | Config Source |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `scalp_5m_agresif` | **5m** | **15m & 1H** | **1.0 – 3.0 pts** | **$\le 0.5\%$ Equity** | **Yes (+1.0 pt)** | **< 10ms (Native)** | `scalp.yaml` + Auto-Backtest |
+| `pullback` | 15m | 1H | $3.0 \times ATR$ | $1.5 \times ATR$ | Standard (+1 ATR) | 3–15s (LLM Gate) | `.env` (`TradingConfig`) |
+| `breakout` | 15m | 1H | $3.0 \times ATR$ | $1.5 \times ATR$ | Standard (+1 ATR) | 3–15s (LLM Gate) | `.env` (`TradingConfig`) |
+| `scalp_5m` | 5m | 15m | $3.0 \times ATR$ | $1.5 \times ATR$ | Standard (+1 ATR) | 3–15s (LLM Gate) | `.env` (`TradingConfig`) |
+
+For the exhaustive technical specification, see [docs/strategies-guide.md](docs/strategies-guide.md).
+
+---
+
+## Architecture
 app_server.py (Bridge initialization)
 │
 ├── Trading (bridge_ccxt.py / bridge_mt5.py)

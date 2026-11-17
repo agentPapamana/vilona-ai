@@ -22,5 +22,21 @@
     "point": 0.01,
     "tick_size": 0.01,
     "tick_value": 0.1
+  },
+  "XAUUSDc": {
+    "lot_max": 1000.0,
+    "lot_min": 0.01,
+    "lot_step": 0.01,
+    "point": 0.01,
+    "tick_size": 0.01,
+    "tick_value": 1.0
+  },
+  "EURUSDc": {
+    "lot_max": 1000.0,
+    "lot_min": 0.01,
+    "lot_step": 0.01,
+    "point": 0.00001,
+    "tick_size": 0.00001,
+    "tick_value": 1.0
   }
 }

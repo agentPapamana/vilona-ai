@@ -59,10 +59,10 @@ from core.quant_scanner import (
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from candle_quality import assert_usable
-SYMBOLS = ("XAUUSD", "EURUSD", "USDJPY")
+SYMBOLS = ("XAUUSD", "XAUUSDc", "EURUSD", "EURUSDc", "USDJPY")
 BAR_SECONDS = 900
 BARS_PER_MONTH = 30 * 24 * 4
-DEFAULT_SPREAD_PRICE = {"XAUUSD": 0.30, "EURUSD": 0.00012, "USDJPY": 0.014}
+DEFAULT_SPREAD_PRICE = {"XAUUSD": 0.30, "XAUUSDc": 0.30, "EURUSD": 0.00012, "EURUSDc": 0.00012, "USDJPY": 0.014}
 DEFAULT_COMMISSION_PER_LOT = 7.0
 BREAKEVEN_ATR = 1.0
 BREAKEVEN_OFFSET_ATR = 0.1
@@ -318,7 +318,7 @@ def main():
         return 2
 
     cfg = Config.from_env()
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     required_days = args.months * 30.
     results, insufficient, loaded = [], [], []
 
@@ -348,7 +348,7 @@ def main():
             args.write_candles.mkdir(parents=True, exist_ok=True)
             (args.write_candles / f"{symbol}_{timeframe}.json").write_text(json.dumps(candles))
         try:
-            metadata_dir = Path("data/candles")
+            metadata_dir = directory if directory is not None else Path("data/candles")
             load_symbol_info(symbol, metadata_dir)
         except Exception as exc:
             print(f"{symbol}: broker metadata error: {exc}", file=sys.stderr)
